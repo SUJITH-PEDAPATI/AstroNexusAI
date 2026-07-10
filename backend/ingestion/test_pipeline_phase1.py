@@ -32,12 +32,102 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 # ── Edit these to match your ingested paper topic ──────────────────────────────
+# TEST_QUERIES = [
+#     "What is the main contribution of this paper?",
+#     "What datasets were used for evaluation?",
+#     "What is the proposed model architecture?",
+#     "What were the experimental results?",
+#     "What are the limitations of this approach?",
+# ]
 TEST_QUERIES = [
+    # ---------------- Basic Understanding ----------------
     "What is the main contribution of this paper?",
-    "What datasets were used for evaluation?",
-    "What is the proposed model architecture?",
-    "What were the experimental results?",
-    "What are the limitations of this approach?",
+    "What problem does SpectralGPT aim to solve?",
+    "Why are existing RGB foundation models insufficient for spectral remote sensing?",
+    "Summarize the paper in 5 sentences.",
+    "Explain this paper as if I am a beginner.",
+
+    # ---------------- Motivation ----------------
+    "Why is spectral remote sensing important?",
+    "What challenges in remote sensing motivated SpectralGPT?",
+    "How does SpectralGPT differ from traditional vision foundation models?",
+    "What gap in previous research does this work address?",
+
+    # ---------------- Model Architecture ----------------
+    "Describe the SpectralGPT architecture.",
+    "What is the 3D Generative Pretrained Transformer?",
+    "How does 3D token generation work?",
+    "What is meant by spatial-spectral coupling?",
+    "Explain the multi-target reconstruction strategy.",
+    "How does progressive pretraining improve the model?",
+    "How does SpectralGPT handle varying image sizes and resolutions?",
+
+    # ---------------- Training ----------------
+    "How many images were used for pretraining?",
+    "What types of satellite imagery were used during training?",
+    "How many parameters does SpectralGPT contain?",
+    "What self-supervised learning strategy is used?",
+    "Why is pretraining important in this work?",
+
+    # ---------------- Datasets ----------------
+    "Which datasets were used for pretraining?",
+    "Which datasets were used for downstream evaluation?",
+    "List all datasets mentioned in the paper.",
+    "Which hyperspectral datasets are used?",
+    "Which multispectral datasets are used?",
+
+    # ---------------- Downstream Tasks ----------------
+    "Which downstream tasks were evaluated?",
+    "How does SpectralGPT perform on scene classification?",
+    "How does SpectralGPT perform on semantic segmentation?",
+    "How does SpectralGPT perform on change detection?",
+    "What applications can benefit from SpectralGPT?",
+
+    # ---------------- Experimental Results ----------------
+    "Summarize the experimental results.",
+    "Did SpectralGPT outperform previous methods?",
+    "Which benchmark showed the largest improvement?",
+    "Which evaluation metrics were used?",
+    "What evidence supports the effectiveness of SpectralGPT?",
+
+    # ---------------- Comparisons ----------------
+    "Compare SpectralGPT with existing remote sensing foundation models.",
+    "What advantages does SpectralGPT have over RGB foundation models?",
+    "How is SpectralGPT different from Vision Transformers?",
+    "Compare SpectralGPT with masked autoencoders used in remote sensing.",
+
+    # ---------------- Limitations ----------------
+    "What limitations are discussed in the paper?",
+    "What future work do the authors suggest?",
+    "What are the challenges of scaling SpectralGPT?",
+
+    # ---------------- Knowledge Graph Testing ----------------
+    "List all models mentioned in the paper.",
+    "List all datasets mentioned in the paper.",
+    "List all remote sensing tasks mentioned.",
+    "List all evaluation metrics.",
+    "List all benchmark datasets.",
+    "List all transformer architectures discussed.",
+
+    # ---------------- Multi-hop Reasoning ----------------
+    "Which datasets were used to evaluate semantic segmentation, and what were the results?",
+    "Which model components help SpectralGPT process spectral information?",
+    "How does progressive pretraining contribute to downstream performance?",
+    "Why is spatial-spectral coupling important for hyperspectral imagery?",
+    "Which downstream task benefits the most from SpectralGPT and why?",
+
+    # ---------------- Summarization ----------------
+    "Summarize the Introduction section.",
+    "Summarize the Methodology section.",
+    "Summarize the Experiments section.",
+    "Summarize the Conclusion section.",
+
+    # ---------------- Retrieval Stress Test ----------------
+    "Find the paragraph discussing progressive training.",
+    "Find where the authors describe multi-target reconstruction.",
+    "Find the section explaining spatial-spectral coupling.",
+    "Find the experimental comparison table.",
+    "Find the conclusion discussing future work."
 ]
 
 
@@ -95,7 +185,6 @@ def write_retrieval_txt(query_results: list[tuple], rag_context: str, out_path: 
                 for j, chunk in enumerate(results, start=1):
                     f.write(f"  Result {j}:\n")
                     f.write(f"    score   : {chunk.score:.6f}\n")
-                    f.write(f"    paper   : {chunk.title or 'Unknown'} ({chunk.year or 'n/a'})\n")
                     f.write(f"    section : {chunk.section}\n")
                     f.write(f"    page    : {chunk.page_num}\n")
                     f.write(f"    doi     : {chunk.doi or 'n/a'}\n")

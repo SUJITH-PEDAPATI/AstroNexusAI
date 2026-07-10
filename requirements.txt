@@ -16,3 +16,5 @@ langchain_ollama
 qdrant-client
 neo4j
 spacy
+rouge_score
+ragas

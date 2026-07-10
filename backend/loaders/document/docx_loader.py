@@ -10,7 +10,6 @@ class DocxLoader(BaseLoader):
 
     Install: pip install docx2txt langchain-community
     """
-
     def load(self) -> dict:
         try:
             from langchain_community.document_loaders import Docx2txtLoader
