@@ -1,7 +1,18 @@
-from qdrant_client import QdrantClient
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain_core.messages import HumanMessage
 
-client = QdrantClient("localhost", port=6333)
+llm = HuggingFaceEndpoint(
+    # repo_id="google/gemma-3-4b-it",
+    repo_id= "Qwen/Qwen2.5-7B-Instruct",
+    # repo_id= "meta-llama/Llama-3.1-70B-Instruct",
+    max_new_tokens=256,
+    temperature=0.1,
+)
 
-client.delete_collection("papers")
+chat = ChatHuggingFace(llm=llm)
 
-print("Collection deleted successfully.")
+response = chat.invoke([
+    HumanMessage(content="What is the use of Artificial Intelligence in today's world?")
+])
+
+print(response.content)

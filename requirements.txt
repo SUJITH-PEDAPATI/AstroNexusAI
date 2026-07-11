@@ -18,3 +18,4 @@ neo4j
 spacy
 rouge_score
 ragas
+datasets==3.6.0
