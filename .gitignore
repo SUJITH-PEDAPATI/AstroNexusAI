@@ -1,20 +1,83 @@
+# ===========================
 # Environment
+# ===========================
 .env
+.env.*
 venv/
 env/
+.venv/
 
-# Python cache
+# ===========================
+# Python
+# ===========================
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
 
-# Database storage
+# ===========================
+# Jupyter
+# ===========================
+.ipynb_checkpoints/
+
+# ===========================
+# Build / Packaging
+# ===========================
+build/
+dist/
+*.egg-info/
+
+# ===========================
+# IDEs
+# ===========================
+.vscode/
+.idea/
+
+# ===========================
+# Databases
+# ===========================
 neo4j_data/
 qdrant_storage/
 
-# Models and outputs
+# ===========================
+# ML Models
+# ===========================
 models/
-output/
+checkpoints/
+weights/
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.onnx
 
-# IDE files
-.vscode/
-.idea/
+# ===========================
+# Generated Outputs
+# ===========================
+output/
+outputs/
+logs/
+*.log
+reports/
+results/
+tmp/
+temp/
+
+# ===========================
+# OS Files
+# ===========================
+.DS_Store
+Thumbs.db
+
+# ===========================
+# Local Config
+# ===========================
+*.sqlite
+*.db
+*.db-journal
