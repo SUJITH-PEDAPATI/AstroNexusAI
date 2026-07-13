@@ -32,7 +32,8 @@ def _call_llm(prompt: str, token: str) -> str:
     """Call HF Inference API for answer generation."""
     import requests
 
-    model_id = "mistralai/Mistral-7B-Instruct-v0.3"
+    # model_id = "mistralai/Mistral-7B-Instruct-v0.3"
+    model_id = "Qwen/Qwen2.5-7B-Instruct"
     url      = f"https://api-inference.huggingface.co/models/{model_id}"
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
