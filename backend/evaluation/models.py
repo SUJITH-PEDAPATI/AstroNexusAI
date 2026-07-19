@@ -17,13 +17,14 @@ class QAPair:
 @dataclass
 class RetrievalResult:
     """Result of retrieving chunks for a question."""
-    question_id:      str
-    question:         str
-    retrieved_chunks: list[str]       # text of retrieved chunks
-    retrieved_scores: list[float]     # cosine similarity scores
-    evidence_chunks:  list[str]       # ground-truth evidence sentences
-
-
+    question_id:         str
+    question:            str
+    retrieved_chunks:    list[str]
+    retrieved_scores:    list[float]
+    evidence_chunks:     list[str]
+    # NEW FIELD — paper_id of each retrieved chunk (same order as retrieved_chunks)
+    # Defaults to empty list so all existing callers keep working unchanged.
+    retrieved_paper_ids: list[str] = field(default_factory=list)
 @dataclass
 class GenerationResult:
     """Result of generating an answer."""

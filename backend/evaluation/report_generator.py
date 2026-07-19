@@ -66,15 +66,16 @@ def aggregate_metrics(
 
 
 def save_csv(
-    retrieval_metrics:  list[RetrievalMetrics],
-    generation_metrics: list[GenerationMetrics],
-    out_dir: Path,
+    retrieval_metrics,
+    generation_metrics,
+    out_dir,
+    filename="evaluation_report.csv",
 ) -> None:
     """Save per-question metrics to CSV."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Per-question detail CSV
-    detail_path = out_dir / "evaluation_report.csv"
+    detail_path = out_dir / filename
     with open(detail_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -120,10 +121,14 @@ def save_csv(
     logger.info(f"[Report] Per-question CSV → {detail_path}")
 
 
-def save_summary_csv(report: EvaluationReport, out_dir: Path) -> None:
+def save_summary_csv(
+    report,
+    out_dir,
+    filename="evaluation_summary.csv",
+) -> None:
     """Save aggregated summary to CSV."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "evaluation_summary.csv"
+    path = out_dir / filename
 
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -158,10 +163,14 @@ def save_summary_csv(report: EvaluationReport, out_dir: Path) -> None:
     logger.info(f"[Report] Summary CSV → {path}")
 
 
-def save_txt_report(report: EvaluationReport, out_dir: Path) -> None:
+def save_txt_report(
+    report,
+    out_dir,
+    filename="evaluation_summary.txt",
+) -> None:
     """Save human-readable report."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "evaluation_summary.txt"
+    path = out_dir / filename
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("=" * 60 + "\n")

@@ -19,3 +19,5 @@ spacy
 rouge_score
 ragas
 datasets==3.6.0
+numpy
+rank-bm25
