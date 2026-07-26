@@ -1,237 +1,406 @@
+"""
+AstroNexus AI — Neo4j Client
+
+Handles connection and Cypher execution for writing extracted entities,
+relationships, and querying graph statistics.
+"""
 from __future__ import annotations
 
 import logging
 import os
-
-from backend.graph.models import (
-    PaperNode, AuthorNode, ModelNode,
-    DatasetNode, TaskNode, VenueNode,
-    GraphRelation, ExtractionResult,
-)
+from typing import Optional, Any
 
 logger = logging.getLogger(__name__)
 
-# Module-level driver singleton
+NEO4J_URI      = os.environ.get("NEO4J_URI",      "bolt://localhost:7687")
+NEO4J_USER     = os.environ.get("NEO4J_USER",     "neo4j")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "astronexus123")
+
 _driver = None
 
 
 def _get_driver():
-    """
-    Lazily initialize the Neo4j driver.
-
-    Reads connection details from environment variables:
-        NEO4J_URI      = bolt://localhost:7687
-        NEO4J_USER     = neo4j
-        NEO4J_PASSWORD = astronexus123
-
-    Install: pip install neo4j
-    """
     global _driver
-
     if _driver is not None:
         return _driver
 
     try:
         from neo4j import GraphDatabase
-    except ImportError as e:
-        raise ImportError("Install required package: pip install neo4j") from e
-
-    uri      = os.environ.get("NEO4J_URI",      "bolt://localhost:7687")
-    user     = os.environ.get("NEO4J_USER",     "neo4j")
-    password = os.environ.get("NEO4J_PASSWORD", "astronexus123")
-
-    logger.info(f"[Neo4j] Connecting to {uri}")
-    _driver = GraphDatabase.driver(uri, auth=(user, password))
-    _driver.verify_connectivity()
-    logger.info("[Neo4j] Connected.")
-    return _driver
+        _driver = GraphDatabase.driver(
+            NEO4J_URI,
+            auth=(NEO4J_USER, NEO4J_PASSWORD),
+        )
+        logger.info(f"[Neo4j] Connected to {NEO4J_URI}")
+        return _driver
+    except Exception as e:
+        logger.error(f"[Neo4j] Connection failed: {e}")
+        raise
 
 
-def close() -> None:
-    """Close the Neo4j driver. Call on app shutdown."""
-    global _driver
-    if _driver:
-        _driver.close()
-        _driver = None
-        logger.info("[Neo4j] Connection closed.")
+def _run(cypher: str, **params) -> list[dict]:
+    """Execute Cypher write/query statement."""
+    driver = _get_driver()
+    with driver.session() as session:
+        result = session.run(cypher, **params)
+        return result.data()
+
+
+def _run_read(cypher: str, **params) -> list[dict]:
+    """Read-only Cypher statement execution helper."""
+    return _run(cypher, **params)
 
 
 def create_constraints() -> None:
-    """
-    Create uniqueness constraints for all node types.
-    Ensures no duplicate nodes are created on repeated ingestion.
-    Safe to call multiple times — skips if constraints already exist.
-    """
+    """Create uniqueness constraints for key node types."""
     constraints = [
-        "CREATE CONSTRAINT paper_id_unique   IF NOT EXISTS FOR (p:Paper)   REQUIRE p.node_id IS UNIQUE",
-        "CREATE CONSTRAINT author_id_unique  IF NOT EXISTS FOR (a:Author)  REQUIRE a.node_id IS UNIQUE",
-        "CREATE CONSTRAINT model_id_unique   IF NOT EXISTS FOR (m:Model)   REQUIRE m.node_id IS UNIQUE",
-        "CREATE CONSTRAINT dataset_id_unique IF NOT EXISTS FOR (d:Dataset) REQUIRE d.node_id IS UNIQUE",
-        "CREATE CONSTRAINT task_id_unique    IF NOT EXISTS FOR (t:Task)    REQUIRE t.node_id IS UNIQUE",
-        "CREATE CONSTRAINT venue_id_unique   IF NOT EXISTS FOR (v:Venue)   REQUIRE v.node_id IS UNIQUE",
+        "CREATE CONSTRAINT paper_id IF NOT EXISTS FOR (p:Paper) REQUIRE p.node_id IS UNIQUE",
+        "CREATE CONSTRAINT author_name IF NOT EXISTS FOR (a:Author) REQUIRE a.name IS UNIQUE",
+        "CREATE CONSTRAINT model_name IF NOT EXISTS FOR (m:Model) REQUIRE m.name IS UNIQUE",
+        "CREATE CONSTRAINT dataset_name IF NOT EXISTS FOR (d:Dataset) REQUIRE d.name IS UNIQUE",
+        "CREATE CONSTRAINT task_name IF NOT EXISTS FOR (t:Task) REQUIRE t.name IS UNIQUE",
     ]
+    for cypher in constraints:
+        try:
+            _run(cypher)
+        except Exception as e:
+            logger.debug(f"[Neo4j] Constraint warning: {e}")
 
-    driver = _get_driver()
-    with driver.session() as session:
-        for cypher in constraints:
-            session.run(cypher)
-    logger.info("[Neo4j] Constraints created.")
 
-
-# ── Node upsert helpers ────────────────────────────────────────────────────────
-# MERGE on node_id ensures idempotent writes — safe to re-run.
-
-def upsert_paper(paper: PaperNode) -> None:
-    cypher = """
-    MERGE (p:Paper {node_id: $node_id})
-    SET p.title       = $title,
-        p.year        = $year,
-        p.doi         = $doi,
-        p.arxiv_id    = $arxiv_id,
-        p.abstract    = $abstract,
-        p.source_file = $source_file,
-        p.paper_id    = $paper_id
+def write_extraction(extraction: Any) -> None:
     """
-    _run(cypher, **paper.model_dump())
-
-
-def upsert_author(author: AuthorNode) -> None:
-    cypher = """
-    MERGE (a:Author {node_id: $node_id})
-    SET a.name = $name
+    Write an ExtractionResult instance into Neo4j graph.
     """
-    _run(cypher, **author.model_dump())
+    if hasattr(extraction, "paper") and extraction.paper:
+        p = extraction.paper
+        _run(
+            "MERGE (p:Paper {node_id: $node_id}) "
+            "SET p.title=$title, p.year=$year, p.doi=$doi, p.abstract=$abstract",
+            node_id=p.node_id,
+            title=p.title,
+            year=p.year,
+            doi=p.doi,
+            abstract=p.abstract,
+        )
+
+    for author in getattr(extraction, "authors", []):
+        _run(
+            "MERGE (a:Author {name: $name}) "
+            "WITH a MATCH (p:Paper {node_id: $pid}) "
+            "MERGE (p)-[:AUTHORED_BY]->(a)",
+            name=author.name,
+            pid=extraction.paper.node_id,
+        )
+
+    for model in getattr(extraction, "models", []):
+        _run(
+            "MERGE (m:Model {name: $name}) "
+            "WITH m MATCH (p:Paper {node_id: $pid}) "
+            "MERGE (p)-[:USES]->(m)",
+            name=model.name,
+            pid=extraction.paper.node_id,
+        )
+
+    for dataset in getattr(extraction, "datasets", []):
+        _run(
+            "MERGE (d:Dataset {name: $name}) "
+            "WITH d MATCH (p:Paper {node_id: $pid}) "
+            "MERGE (p)-[:USES]->(d)",
+            name=dataset.name,
+            pid=extraction.paper.node_id,
+        )
+
+    for task in getattr(extraction, "tasks", []):
+        _run(
+            "MERGE (t:Task {name: $name}) "
+            "WITH t MATCH (p:Paper {node_id: $pid}) "
+            "MERGE (p)-[:SOLVES]->(t)",
+            name=task.name,
+            pid=extraction.paper.node_id,
+        )
 
 
-def upsert_model(model: ModelNode) -> None:
-    cypher = """
-    MERGE (m:Model {node_id: $node_id})
-    SET m.name        = $name,
-        m.description = $description
-    """
-    _run(cypher, **model.model_dump())
+class Neo4jClient:
+    """Class wrapper for Neo4j operations."""
+
+    def __init__(self) -> None:
+        self.driver = _get_driver()
+
+    def query(self, cypher: str, **params) -> list[dict]:
+        with self.driver.session() as session:
+            result = session.run(cypher, **params)
+            return result.data()
 
 
-def upsert_dataset(dataset: DatasetNode) -> None:
-    cypher = """
-    MERGE (d:Dataset {node_id: $node_id})
-    SET d.name        = $name,
-        d.description = $description
-    """
-    _run(cypher, **dataset.model_dump())
+# ══════════════════════════════════════════════════════════════════════════════
+# NEW NODE WRITERS
+# ══════════════════════════════════════════════════════════════════════════════
 
-
-def upsert_task(task: TaskNode) -> None:
-    cypher = """
-    MERGE (t:Task {node_id: $node_id})
-    SET t.name = $name
-    """
-    _run(cypher, **task.model_dump())
-
-
-def upsert_venue(venue: VenueNode) -> None:
-    cypher = """
-    MERGE (v:Venue {node_id: $node_id})
-    SET v.name = $name,
-        v.year = $year
-    """
-    _run(cypher, **venue.model_dump())
-
-
-def upsert_relation(relation: GraphRelation) -> None:
-    """
-    Create a relationship between two existing nodes.
-    Uses dynamic relationship type via APOC-free approach.
-    """
-    cypher = f"""
-    MATCH (a {{node_id: $from_id}})
-    MATCH (b {{node_id: $to_id}})
-    MERGE (a)-[r:{relation.relation_type.value}]->(b)
-    SET r += $properties
-    """
-    _run(cypher,
-         from_id=relation.from_id,
-         to_id=relation.to_id,
-         properties=relation.properties)
-
-
-def write_extraction(result: ExtractionResult) -> None:
-    """
-    Write a full ExtractionResult to Neo4j in one call.
-    Upserts all nodes then all relations.
-
-    Args:
-        result: Output from entity_extractor.py
-    """
-    logger.info(f"[Neo4j] Writing graph for paper: '{result.paper.title}'")
-
-    # Upsert all nodes
-    upsert_paper(result.paper)
-
-    for author  in result.authors:  upsert_author(author)
-    for model   in result.models:   upsert_model(model)
-    for dataset in result.datasets: upsert_dataset(dataset)
-    for task    in result.tasks:    upsert_task(task)
-    for venue   in result.venues:   upsert_venue(venue)
-
-    # Upsert all relations
-    for relation in result.relations:
-        upsert_relation(relation)
-
-    logger.info(
-        f"[Neo4j] Written — "
-        f"{len(result.authors)} authors, "
-        f"{len(result.models)} models, "
-        f"{len(result.datasets)} datasets, "
-        f"{len(result.tasks)} tasks, "
-        f"{len(result.relations)} relations"
+def write_institution(name: str, country: str = "") -> None:
+    """MERGE an Institution node."""
+    _run_read(
+        "MERGE (i:Institution {name: $name}) "
+        "SET i.country = $country",
+        name=name, country=country,
     )
 
 
+def write_algorithm(
+    name:   str,
+    algo_type: str = "",
+    domain: str = "",
+) -> None:
+    """MERGE an Algorithm node."""
+    _run_read(
+        "MERGE (a:Algorithm {name: $name}) "
+        "SET a.type=$type, a.domain=$domain",
+        name=name, type=algo_type, domain=domain,
+    )
+
+
+def write_metric(name: str, task: str = "") -> None:
+    """MERGE a Metric node."""
+    _run_read(
+        "MERGE (m:Metric {name: $name}) "
+        "SET m.task = $task",
+        name=name, task=task,
+    )
+
+
+def write_conference_or_journal(
+    name:        str,
+    venue_type:  str = "Conference",
+    domain:      str = "",
+) -> None:
+    """MERGE a Conference or Journal node based on venue_type."""
+    if venue_type == "Journal":
+        _run_read(
+            "MERGE (j:Journal {name: $name}) SET j.domain=$domain",
+            name=name, domain=domain,
+        )
+    else:
+        _run_read(
+            "MERGE (c:Conference {name: $name}) SET c.domain=$domain",
+            name=name, domain=domain,
+        )
+
+
+def write_keyword(name: str, domain: str = "") -> None:
+    """MERGE a Keyword node."""
+    _run_read(
+        "MERGE (k:Keyword {name: $name}) "
+        "SET k.domain = $domain",
+        name=name, domain=domain,
+    )
+
+
+def link_paper_to_ontology(
+    paper_node_id:  str,
+    algorithms:     list[str] = None,
+    metrics:        list[str] = None,
+    keywords:       list[str] = None,
+    institutions:   list[str] = None,
+    venue_name:     Optional[str] = None,
+    venue_type:     str = "Conference",
+    satellites:     list[str] = None,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+
+    if algorithms:
+        for algo in algorithms:
+            _run_read(
+                "MATCH (p:Paper {node_id:$pid}) "
+                "MATCH (a:Algorithm {name:$aname}) "
+                "MERGE (p)-[:USES]->(a)",
+                pid=paper_node_id, aname=algo,
+            )
+        counts["USES_algorithm"] = len(algorithms)
+
+    if metrics:
+        for metric in metrics:
+            _run_read(
+                "MATCH (p:Paper {node_id:$pid}) "
+                "MATCH (m:Metric {name:$mname}) "
+                "MERGE (p)-[:EVALUATED_BY]->(m)",
+                pid=paper_node_id, mname=metric,
+            )
+        counts["EVALUATED_BY"] = len(metrics)
+
+    if keywords:
+        for kw in keywords:
+            _run_read(
+                "MATCH (p:Paper {node_id:$pid}) "
+                "MATCH (k:Keyword {name:$kname}) "
+                "MERGE (p)-[:TAGGED]->(k)",
+                pid=paper_node_id, kname=kw,
+            )
+        counts["TAGGED_keyword"] = len(keywords)
+
+    if institutions:
+        for inst in institutions:
+            _run_read(
+                "MATCH (p:Paper {node_id:$pid}) "
+                "MATCH (a:Author)-[:AUTHORED_BY]-(p) "
+                "MATCH (i:Institution {name:$iname}) "
+                "MERGE (a)-[:AFFILIATED_WITH]->(i)",
+                pid=paper_node_id, iname=inst,
+            )
+        counts["AFFILIATED_WITH"] = len(institutions)
+
+    if venue_name:
+        label = "Journal" if venue_type == "Journal" else "Conference"
+        _run_read(
+            f"MATCH (p:Paper {{node_id:$pid}}) "
+            f"MATCH (v:{label} {{name:$vname}}) "
+            f"MERGE (p)-[:PRESENTED_AT]->(v)",
+            pid=paper_node_id, vname=venue_name,
+        )
+        counts["PRESENTED_AT"] = 1
+
+    if satellites:
+        for sat in satellites:
+            _run_read(
+                "MATCH (p:Paper {node_id:$pid}) "
+                "MATCH (s:Satellite {name:$sname}) "
+                "MERGE (p)-[:USES]->(s)",
+                pid=paper_node_id, sname=sat,
+            )
+        counts["USES_satellite"] = len(satellites)
+
+    logger.info(
+        f"[Neo4j] Ontology links for {paper_node_id[:12]}...: {counts}"
+    )
+    return counts
+
+
+def get_paper_graph_context(paper_node_id: str) -> dict:
+    rows = _run_read(
+        """
+        MATCH (p:Paper {node_id: $pid})
+        OPTIONAL MATCH (p)-[:AUTHORED_BY]->(au:Author)
+        OPTIONAL MATCH (au)-[:AFFILIATED_WITH]->(inst:Institution)
+        OPTIONAL MATCH (p)-[:USES]->(m:Model)
+        OPTIONAL MATCH (p)-[:USES]->(a:Algorithm)
+        OPTIONAL MATCH (p)-[:USES]->(d:Dataset)
+        OPTIONAL MATCH (p)-[:SOLVES]->(t:Task)
+        OPTIONAL MATCH (p)-[:EVALUATED_BY]->(met:Metric)
+        OPTIONAL MATCH (p)-[:PRESENTED_AT]->(v)
+        OPTIONAL MATCH (p)-[:BELONGS_TO]->(dom:Domain)
+        OPTIONAL MATCH (p)-[:TAGGED]->(kw:Keyword)
+        OPTIONAL MATCH (p)-[:USES]->(sat:Satellite)
+        RETURN
+            p.title          AS title,
+            p.year           AS year,
+            p.doi            AS doi,
+            collect(DISTINCT au.name)   AS authors,
+            collect(DISTINCT inst.name) AS institutions,
+            collect(DISTINCT m.name)    AS models,
+            collect(DISTINCT a.name)    AS algorithms,
+            collect(DISTINCT d.name)    AS datasets,
+            collect(DISTINCT t.name)    AS tasks,
+            collect(DISTINCT met.name)  AS metrics,
+            v.name                      AS venue,
+            dom.name                    AS domain,
+            collect(DISTINCT kw.name)   AS keywords,
+            collect(DISTINCT sat.name)  AS satellites
+        """,
+        pid=paper_node_id,
+    )
+
+    if not rows:
+        return {}
+
+    row = rows[0]
+    return {
+        "title":        row.get("title", ""),
+        "year":         row.get("year", ""),
+        "doi":          row.get("doi", ""),
+        "authors":      [a for a in row.get("authors", [])       if a],
+        "institutions": [i for i in row.get("institutions", [])  if i],
+        "models":       [m for m in row.get("models", [])        if m],
+        "algorithms":   [a for a in row.get("algorithms", [])    if a],
+        "datasets":     [d for d in row.get("datasets", [])      if d],
+        "tasks":        [t for t in row.get("tasks", [])         if t],
+        "metrics":      [m for m in row.get("metrics", [])       if m],
+        "venue":        row.get("venue", ""),
+        "domain":       row.get("domain", ""),
+        "keywords":     [k for k in row.get("keywords", [])      if k],
+        "satellites":   [s for s in row.get("satellites", [])    if s],
+    }
+
+
+def get_entity_neighbours(
+    entity_name: str,
+    depth:       int = 1,
+    limit:       int = 20,
+) -> list[dict]:
+    rows = _run_read(
+        f"""
+        MATCH (n {{name: $name}})-[r*1..{depth}]->(m)
+        RETURN
+            n.name           AS source,
+            [rel in r | type(rel)] AS relations,
+            m.name           AS target,
+            labels(m)[0]     AS target_type
+        LIMIT $limit
+        """,
+        name=entity_name, limit=limit,
+    )
+    return [
+        {
+            "source":      row.get("source"),
+            "relations":   row.get("relations", []),
+            "target":      row.get("target"),
+            "target_type": row.get("target_type"),
+        }
+        for row in rows
+    ]
+
+
 def get_graph_stats() -> dict:
-    """Return node and relation counts — useful for verifying writes."""
-    cypher = """
-    MATCH (n)
-    RETURN labels(n)[0] AS label, count(n) AS count
-    ORDER BY count DESC
+    node_types = [
+        "Paper", "Author", "Model", "Dataset", "Task", "Venue",
+        "Domain", "Tag", "Keyword",
+        "Institution", "Satellite", "Sensor", "Mission",
+        "Algorithm", "Metric", "LossFunction", "Conference", "Journal",
+    ]
+
+    node_counts: dict[str, int] = {}
+    for ntype in node_types:
+        rows = _run_read(f"MATCH (n:{ntype}) RETURN count(n) AS n")
+        node_counts[ntype] = rows[0]["n"] if rows else 0
+
+    rel_rows = _run_read(
+        "MATCH ()-[r]->() "
+        "RETURN type(r) AS t, count(r) AS n "
+        "ORDER BY n DESC"
+    )
+    rel_counts = {row["t"]: row["n"] for row in rel_rows}
+
+    return {
+        "nodes":         {k: v for k, v in node_counts.items() if v > 0},
+        "relations":     rel_counts,
+        "total_nodes":   sum(node_counts.values()),
+        "total_relations": sum(rel_counts.values()),
+    }
+
+
+def query_paper_graph(query_str: str) -> list[dict]:
     """
-    driver = _get_driver()
-    with driver.session() as session:
-        result = session.run(cypher)
-        node_counts = {row["label"]: row["count"] for row in result}
-
-    cypher_rels = "MATCH ()-[r]->() RETURN type(r) AS type, count(r) AS count ORDER BY count DESC"
-    with driver.session() as session:
-        result = session.run(cypher_rels)
-        rel_counts = {row["type"]: row["count"] for row in result}
-
-    return {"nodes": node_counts, "relations": rel_counts}
-
-
-def query_paper_graph(paper_title: str) -> list[dict]:
+    Search paper nodes and relationships in the graph.
+    Convenience alias for graph agents.
     """
-    Return the full subgraph for a paper — all connected nodes and relations.
-    Useful for graph visualization in the frontend.
-    """
-    cypher = """
-    MATCH (p:Paper)
-    WHERE toLower(p.title) CONTAINS toLower($title)
-    MATCH (p)-[r]->(n)
-    RETURN p.title AS paper,
-           type(r) AS relation,
-           labels(n)[0] AS target_type,
-           n.name AS target_name
-    """
-    driver = _get_driver()
-    with driver.session() as session:
-        result = session.run(cypher, title=paper_title)
-        return [dict(row) for row in result]
-
-
-# ── Internal helper ────────────────────────────────────────────────────────────
-
-def _run(cypher: str, **params) -> None:
-    """Execute a write Cypher query."""
-    driver = _get_driver()
-    with driver.session() as session:
-        session.run(cypher, **params)
+    return _run_read(
+        """
+        MATCH (n)
+        WHERE (n:Paper OR n:Model OR n:Dataset OR n:Author)
+          AND toLower(coalesce(n.name, n.title, '')) CONTAINS toLower($q)
+        OPTIONAL MATCH (n)-[r]->(m)
+        RETURN
+            labels(n)[0]                  AS type,
+            coalesce(n.name, n.title, '') AS name,
+            type(r)                       AS relation,
+            coalesce(m.name, m.title, '') AS related
+        LIMIT 10
+        """,
+        q=query_str,
+    )

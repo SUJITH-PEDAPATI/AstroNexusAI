@@ -32,3 +32,8 @@ timm
 qwen-vl-utils
 accelerate
 google-genai
+openai-whisper
+edge-tts
+pyttsx3
+langgraph
+langchain-core

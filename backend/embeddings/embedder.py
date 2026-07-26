@@ -86,25 +86,28 @@ def _chunk_hash(text: str) -> str:
 def _embed_with_retry(model, texts: list[str]) -> list[list[float]]:
     """
     Call model.embed_documents() with retry logic.
-    Handles 503 (model cold start on free tier) automatically.
+    Handles 503/504 (model cold start / gateway timeout) automatically.
     """
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             return model.embed_documents(texts)
         except Exception as e:
             error_str = str(e).lower()
-            if "503" in error_str or "loading" in error_str:
+            if any(code in error_str for code in ["503", "504", "502", "timeout", "loading"]):
                 logger.warning(
-                    f"[Embedder] Model loading (503) — "
+                    f"[Embedder] HF API timeout/loading issue ({e}) — "
                     f"attempt {attempt}/{MAX_RETRIES}. "
                     f"Waiting {RETRY_DELAY}s..."
                 )
                 time.sleep(RETRY_DELAY)
             elif "429" in error_str or "rate" in error_str:
-                logger.warning("[Embedder] Rate limited — waiting 60s...")
-                time.sleep(60)
+                logger.warning("[Embedder] Rate limited — waiting 30s...")
+                time.sleep(30)
             else:
-                raise
+                if attempt == MAX_RETRIES:
+                    raise
+                logger.warning(f"[Embedder] Attempt {attempt} failed ({e}), retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
 
     raise RuntimeError(
         f"HF Inference API failed after {MAX_RETRIES} attempts. "
@@ -219,6 +222,6 @@ def embed_query(query_text: str) -> list[float]:
 
     logger.info(f"[Embedder] Embedding query: '{query_text[:60]}'")
 
-    # embed_query is LangChain's single-text embedding method
-    vector = model.embed_query(instructed)
-    return _normalize(vector)
+    # Use _embed_with_retry to handle 504 Gateway Timeouts
+    vectors = _embed_with_retry(model, [instructed])
+    return _normalize(vectors[0])
