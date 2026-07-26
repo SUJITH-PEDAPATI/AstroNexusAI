@@ -21,8 +21,14 @@ ragas
 datasets==3.6.0
 numpy
 rank-bm25
-transformers
+transformers>=4.46
 torch
 torchvision
 Pillow
 rasterio
+segment-anything-2
+einops
+timm
+qwen-vl-utils
+accelerate
+google-genai
