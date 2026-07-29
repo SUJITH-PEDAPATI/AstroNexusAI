@@ -41,6 +41,10 @@ DOMAIN_KEYWORDS: dict[str, dict[str, list[str]]] = {
             "spectral band", "ndvi", "flood detection", "change detection",
             "crop classification", "urban mapping", "dinov2", "spectral gpt",
             "spectralgpt", "geotiff", "raster", "pixel classification",
+            "spectral", "foundation model", "pretrain", "self-supervised",
+            "masked autoencoder", "mae", "patch", "scene classification",
+            "pixel-wise", "encoder", "downstream task", "remote sensing foundation",
+            "spectral signature", "optical image", "eo", "earth observing",
         ],
         "secondary": [
             "image segmentation", "object detection", "scene classification",

@@ -1,305 +1,237 @@
 """
-AstroNexus AI — Research Agent (complete pipeline)
-
-Full flow on every query:
-    1. Retrieve chunks from Qdrant (semantic search)
-    2. Pull graph context from Neo4j (entities, keywords, authors, satellites)
-    3. Pull image keywords from Neo4j (if image was uploaded this session)
-    4. Knowledge Fusion — merge all three into structured prompt
-    5. Ollama — fast local draft answer
-    6. Gemini — refine + improve the Ollama draft
-    7. Evaluator — confidence, grounding, hallucination, citations
-    8. Return final answer + full evaluation metadata
+AstroNexus AI — Research Agent v4.4
+Uses identity module so every response sounds like AstroNexus AI.
 """
 from __future__ import annotations
 
-import json
-import logging
-import os
-import urllib.request
-
-from backend.agents.state import AgentState
+import json, logging, os, re, time, urllib.request
+from backend.agents.state    import AgentState
+from backend.agents.identity import (
+    PAPER_SYSTEM, REFINE_SYSTEM, GENERAL_SYSTEM, ASTRONOMY_SYSTEM
+)
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE  = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL",    "qwen3:4b")
-GEMINI_KEY   = os.environ.get("GEMINI_API_KEY",  "")
+OLLAMA_BASE   = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL  = os.environ.get("OLLAMA_MODEL",    "qwen3:4b")
+GEMINI_KEY    = os.environ.get("GEMINI_API_KEY",  "")
+ABSTAIN_SCORE = 0.20
 
-_SYSTEM = """\
-You are a scientific research assistant for AstroNexus AI.
-You have access to:
-  - Document excerpts retrieved from uploaded papers
-  - Knowledge graph context (authors, models, datasets, keywords, satellites)
-  - Image analysis keywords (if a satellite image was uploaded)
+_PAPER_PROMPT = """\
+{fused_context}
 
-Rules:
-  - Answer using ONLY the provided context
-  - Cite section names when referencing specific content
-  - If context is insufficient, say so — do not invent details
-  - Do not fabricate section numbers, page numbers, equations, or scores
-  - Use graph context to enrich answers with entity relationships"""
+ANSWER THE QUESTION using ONLY the document excerpts and graph context above.
+Cite every fact: [chunk_number, p.page]
+If not found: "AstroNexus AI could not find this in the uploaded paper."
+
+ANSWER:"""
 
 _REFINE_PROMPT = """\
-You are refining a scientific answer.
+CONTEXT (document + graph):
+{fused_context}
 
-Original answer from local model:
-{ollama_answer}
+DRAFT:
+{draft}
 
-Full context used:
-{context}
+QUESTION: {question}
 
-Question: {question}
+IMPROVED ANSWER WITH FULL CITATIONS:"""
 
-Improve the answer by:
-1. Adding specific citations from the document excerpts (Section name, page)
-2. Incorporating relevant graph facts (authors, models, datasets, satellites)
-3. Correcting any inaccuracies
-4. Making it more precise and well-structured
-
-Refined answer:"""
+_LIVE_RE = re.compile(
+    r'\b(weather|forecast|right now|today|air quality|real.?time)\b',
+    re.IGNORECASE,
+)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LLM CALLS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _call_ollama(prompt: str) -> str:
-    """Fast local draft via Ollama."""
+def _ollama(system: str, prompt: str) -> str:
     payload = json.dumps({
         "model":  OLLAMA_MODEL,
         "prompt": prompt,
-        "system": _SYSTEM,
+        "system": system,
         "stream": False,
-        "options": {"temperature": 0.2, "num_predict": 512},
+        "options": {"temperature": 0.1, "num_predict": 1200},
     }).encode()
-
     try:
         req = urllib.request.Request(
             f"{OLLAMA_BASE}/api/generate",
             data=payload, headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=90) as resp:
             return json.loads(resp.read()).get("response", "").strip()
     except Exception as e:
-        logger.warning(f"[ResearchAgent] Ollama failed: {e}")
+        logger.error(f"[ResearchAgent] Ollama: {e}")
         return ""
 
 
-def _call_gemini(question: str, context: str, ollama_draft: str) -> str:
-    """Refine Ollama draft using Gemini for higher quality."""
-    if not GEMINI_KEY:
-        return ""
+def _gemini(system: str, prompt: str) -> str:
+    if not GEMINI_KEY: return ""
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_KEY)
-        model    = genai.GenerativeModel("gemini-2.0-flash")
-        prompt   = _REFINE_PROMPT.format(
-            ollama_answer= ollama_draft,
-            context=       context[:4000],
-            question=      question,
-        )
-        response = model.generate_content(
-            f"{_SYSTEM}\n\n{prompt}",
-            generation_config={"temperature": 0.2, "max_output_tokens": 800},
+        from google import genai
+        from google.genai import types
+        client   = genai.Client(api_key=GEMINI_KEY)
+        response = client.models.generate_content(
+            model=    "gemini-2.0-flash",
+            contents= f"{system}\n\n{prompt}",
+            config=   types.GenerateContentConfig(
+                temperature=0.1, max_output_tokens=1200
+            ),
         )
         return response.text.strip()
     except Exception as e:
-        logger.warning(f"[ResearchAgent] Gemini refine failed: {e}")
+        logger.warning(f"[ResearchAgent] Gemini: {e}")
         return ""
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# IMAGE KEYWORDS FROM NEO4J (for current session image)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _get_image_keywords_from_graph(image_path: str | None) -> list[str]:
-    """Retrieve keywords that were written to Neo4j when the image was uploaded."""
-    if not image_path:
-        return []
-    try:
-        from backend.graph.neo4j_client import _get_driver
-        driver = _get_driver()
-        with driver.session() as s:
-            rows = s.run(
-                """
-                MATCH (img:ImageSession {path: $path})-[:HAS_KEYWORD]->(k:Keyword)
-                RETURN k.name AS kw
-                """,
-                path=str(image_path),
-            ).data()
-        return [r["kw"] for r in rows]
-    except Exception as e:
-        logger.warning(f"[ResearchAgent] Image keyword fetch failed: {e}")
-        return []
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# VOICE INPUT KEYWORD EXTRACTION
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _extract_voice_keywords(query: str) -> list[str]:
-    """
-    Extract domain keywords from a voice-transcribed query
-    and write them to Neo4j for session context enrichment.
-    """
-    from backend.graph.domain_classifier import DOMAIN_KEYWORDS
-    import re
-
-    found = []
-    query_lower = query.lower()
-
-    for domain, kw_groups in DOMAIN_KEYWORDS.items():
-        for kw in kw_groups.get("primary", []) + kw_groups.get("secondary", []):
-            if re.search(r'\b' + re.escape(kw.lower()) + r'\b', query_lower):
-                found.append(kw)
-
-    if found:
-        try:
-            from backend.graph.neo4j_client import _get_driver
-            driver = _get_driver()
-            with driver.session() as s:
-                for kw in found:
-                    s.run(
-                        "MERGE (k:Keyword {name: $kw}) SET k.domain='voice_query'",
-                        kw=kw,
-                    )
-        except Exception:
-            pass
-
-    return found
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN AGENT NODE
-# ══════════════════════════════════════════════════════════════════════════════
-
 def research_agent_node(state: AgentState) -> AgentState:
-    """
-    LangGraph node: full Qdrant + Neo4j + Ollama + Gemini + Evaluator pipeline.
-    """
+    t0         = time.perf_counter()
     query      = state.get("query", "")
     metadata   = state.get("metadata") or {}
-    image_path = metadata.get("image_path")
     paper_id   = metadata.get("paper_id")
-    audio_path = state.get("audio_path")
+    history    = state.get("conversation_history") or []
+    turn_count = state.get("turn_count", 1)
+    paper_loaded = (
+        metadata.get("paper_loaded", False)
+        or state.get("paper_loaded", False)
+    )
 
-    logger.info(f"[ResearchAgent] ── Query: {query[:60]} ──")
+    logger.info(f"[ResearchAgent] T{turn_count} paper={paper_loaded} '{query[:50]}'")
 
-    # ── Step 1: Retrieve from Qdrant ──────────────────────────────────────────
-    retrieved_chunks = []
-    chunk_dicts      = []
-
+    # ── Retrieve ──────────────────────────────────────────────────────────────
+    chunk_dicts = []
+    top_score   = 0.0
     try:
         from backend.rag.retriever import retrieve
-
-        retrieved_chunks = retrieve(query, top_k=5)
+        chunks = retrieve(query, top_k=5, paper_id=paper_id)
         chunk_dicts = [
             {
-                "score":   c.score,
-                "text":    c.text,
-                "section": c.section,
-                "page_num":c.page_num,
+                "score":   c.score, "text": c.text,
+                "section": c.section, "page_num": c.page_num,
                 "title":   c.title,
-                "payload": {
-                    "text":    c.text,
-                    "section": c.section,
-                    "page_num":c.page_num,
-                    "title":   c.title,
-                },
+                "payload": {"text":c.text,"section":c.section,"page_num":c.page_num},
             }
-            for c in retrieved_chunks
+            for c in chunks
         ]
-        logger.info(
-            f"[ResearchAgent] Qdrant: {len(retrieved_chunks)} chunks, "
-            f"top score: {retrieved_chunks[0].score:.3f if retrieved_chunks else 0:.3f}"
-        )
+        top_score = chunks[0].score if chunks else 0.0
+        logger.info(f"[ResearchAgent] {len(chunk_dicts)} chunks top={top_score:.4f}")
     except Exception as e:
-        logger.warning(f"[ResearchAgent] Qdrant retrieval failed: {e}")
+        logger.error(f"[ResearchAgent] Retrieval: {e}")
 
-    # ── Step 2: Get image keywords from Neo4j ─────────────────────────────────
-    image_keywords = _get_image_keywords_from_graph(image_path)
-    if image_keywords:
-        logger.info(f"[ResearchAgent] Image keywords from graph: {image_keywords}")
-
-    # ── Step 3: Extract voice keywords (if voice query) ───────────────────────
-    if audio_path and query:
-        voice_kws = _extract_voice_keywords(query)
-        if voice_kws:
-            logger.info(f"[ResearchAgent] Voice keywords extracted: {voice_kws}")
-
-    # ── Step 4: Knowledge Fusion (Qdrant + Neo4j + image keywords) ────────────
-    try:
-        from backend.agents.knowledge_fusion import fuse
-
-        fused = fuse(
-            query=          query,
-            qdrant_chunks=  chunk_dicts,
-            paper_node_id=  paper_id,
-            image_keywords= image_keywords,
-        )
-        fused_prompt = fused.prompt_text
-        logger.info("[ResearchAgent] Knowledge fusion complete")
-    except Exception as e:
-        logger.warning(f"[ResearchAgent] Knowledge fusion failed, using raw chunks: {e}")
-        fused_prompt = "\n\n".join(c.get("text","") for c in chunk_dicts[:5])
-
-    # ── Step 5: Ollama — fast local draft ─────────────────────────────────────
-    logger.info("[ResearchAgent] Calling Ollama...")
-    ollama_answer = _call_ollama(
-        f"{fused_prompt}\n\nQuestion: {query}\n\nAnswer:"
-    )
-    if ollama_answer:
-        logger.info(f"[ResearchAgent] Ollama draft: {ollama_answer[:80]}...")
+    # ── Mode ──────────────────────────────────────────────────────────────────
+    if _LIVE_RE.search(query):
+        mode = "live_data"
+    elif paper_loaded:
+        mode = "paper_qa"
     else:
-        logger.warning("[ResearchAgent] Ollama returned empty response")
-        ollama_answer = "I was unable to generate an initial draft."
+        mode = "general"
 
-    # ── Step 6: Gemini — refine the Ollama draft ──────────────────────────────
-    logger.info("[ResearchAgent] Calling Gemini to refine...")
-    gemini_answer = _call_gemini(query, fused_prompt, ollama_answer)
+    logger.info(f"[ResearchAgent] mode={mode}")
+    final_answer = ""
+    eval_dict    = {}
 
-    # Use Gemini if it returned something, otherwise keep Ollama
-    final_raw = gemini_answer if gemini_answer else ollama_answer
-    logger.info(f"[ResearchAgent] Final answer source: {'Gemini' if gemini_answer else 'Ollama'}")
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAPER QA
+    # ══════════════════════════════════════════════════════════════════════════
+    if mode == "paper_qa":
+        if not chunk_dicts or top_score < ABSTAIN_SCORE:
+            final_answer = (
+                f"**AstroNexus AI** could not find sufficient evidence in the "
+                f"uploaded paper to answer this question "
+                f"(retrieval score: {top_score:.3f}). "
+                f"Please try rephrasing your question."
+            )
+        else:
+            fused_prompt = ""
+            try:
+                from backend.agents.knowledge_fusion import fuse
+                fused        = fuse(
+                    query=                query,
+                    qdrant_chunks=        chunk_dicts,
+                    paper_node_id=        paper_id,
+                    conversation_history= history,
+                )
+                fused_prompt = fused.prompt_text
+                g            = fused.graph_entities
+                logger.info(
+                    f"[ResearchAgent] Graph authors={len(g.get('authors',[]))} "
+                    f"kws={len(g.get('keywords',[]))} domain='{g.get('domain','')}'"
+                )
+            except Exception as e:
+                logger.warning(f"[ResearchAgent] Fusion: {e}")
+                fused_prompt = "\n\n".join(
+                    f"[Chunk {i+1} | {c['section']} p.{c['page_num']}]\n{c['text']}"
+                    for i, c in enumerate(chunk_dicts[:5])
+                )
 
-    # ── Step 7: Evaluate ──────────────────────────────────────────────────────
-    try:
-        from backend.agents.answer_evaluator import get_evaluator
+            draft        = _ollama(PAPER_SYSTEM, _PAPER_PROMPT.format(fused_context=fused_prompt))
+            final_answer = _gemini(
+                REFINE_SYSTEM,
+                _REFINE_PROMPT.format(fused_context=fused_prompt, draft=draft, question=query)
+            ) or draft or "AstroNexus AI was unable to generate an answer."
 
-        eval_result = get_evaluator().evaluate(
-            query=            query,
-            answer=           final_raw,
-            retrieved_chunks= chunk_dicts,
-        )
-        final_answer = eval_result.answer
+            # Evaluate
+            try:
+                from backend.agents.live_evaluator import evaluate_paper_answer
+                ev        = evaluate_paper_answer(query, final_answer, chunk_dicts)
+                eval_dict = ev.to_dict()
+                logger.info(
+                    f"[ResearchAgent] grade={ev.grade} BLEU={ev.bleu:.3f} "
+                    f"F1={ev.f1:.3f} gnd={ev.grounding:.3f} cite={ev.citation_coverage:.3f}"
+                )
+                try:
+                    from backend.agents.eval_logger import save_eval
+                    save_eval(
+                        query=query, answer=final_answer, mode=mode,
+                        eval_dict=eval_dict, paper_id=paper_id,
+                        top_score=top_score, latency_s=time.perf_counter()-t0,
+                    )
+                except Exception: pass
+            except Exception as e:
+                logger.warning(f"[ResearchAgent] Eval: {e}")
 
-        logger.info(
-            f"[ResearchAgent] Evaluation — "
-            f"confidence={eval_result.confidence} "
-            f"grounding={eval_result.grounding_score:.2f} "
-            f"reliable={eval_result.is_reliable} "
-            f"warnings={len(eval_result.warnings)}"
-        )
+    # ══════════════════════════════════════════════════════════════════════════
+    # LIVE DATA
+    # ══════════════════════════════════════════════════════════════════════════
+    elif mode == "live_data":
+        try:
+            from backend.agents.api_router import select_apis
+            from backend.agents.api_fusion import call_apis, format_for_prompt
+            api_data = format_for_prompt(call_apis(select_apis(query)))
+            if api_data:
+                final_answer = _gemini(
+                    ASTRONOMY_SYSTEM,
+                    f"Real-time data:\n{api_data}\n\nQuestion: {query}\n\nCite each source."
+                )
+        except Exception as e:
+            logger.warning(f"[ResearchAgent] Live: {e}")
 
-        eval_dict = eval_result.to_dict()
+    # ══════════════════════════════════════════════════════════════════════════
+    # GENERAL
+    # ══════════════════════════════════════════════════════════════════════════
+    else:
+        draft        = _ollama(GENERAL_SYSTEM, f"Question: {query}")
+        final_answer = _gemini(GENERAL_SYSTEM, f"Improve:\n{draft}\n\nQ: {query}") or draft
 
-    except Exception as e:
-        logger.warning(f"[ResearchAgent] Evaluator failed: {e}")
-        final_answer = final_raw
-        eval_dict    = {"error": str(e)}
+    if not final_answer:
+        final_answer = "AstroNexus AI was unable to generate an answer. Please check Ollama is running."
 
-    # ── Step 8: Return ────────────────────────────────────────────────────────
+    updated_history = list(history) + [{
+        "turn": turn_count, "query": query,
+        "answer": final_answer[:500], "mode": mode,
+    }]
+
+    elapsed = time.perf_counter() - t0
+    logger.info(f"[ResearchAgent] done {elapsed:.1f}s")
+
     return {
         **state,
-        "rag_context":  fused_prompt[:2000],
-        "final_answer": final_answer,
+        "final_answer":         final_answer,
+        "conversation_history": updated_history,
         "metadata": {
             **metadata,
-            "evaluation":      eval_dict,
-            "image_keywords":  image_keywords,
-            "ollama_used":     bool(ollama_answer),
-            "gemini_used":     bool(gemini_answer),
+            "mode":       mode,
+            "top_score":  round(top_score, 4),
+            "evaluation": eval_dict,
+            "latency_s":  round(elapsed, 2),
         },
     }

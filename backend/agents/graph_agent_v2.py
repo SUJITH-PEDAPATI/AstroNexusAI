@@ -1,159 +1,178 @@
 """
-AstroNexus AI — Graph Agent (domain-aware)
+AstroNexus AI — General Agent v2
 
-Updated to query Domain and Tag nodes seeded by seed_graph.py
-and linked by graph_builder.py during paper ingestion.
+Now uses External API Intelligence Layer for real-time data.
+
+Flow:
+    query
+      ↓
+    APIRouter.select_apis()     ← Neo4j keyword → API lookup
+      ↓
+    APIFusionLayer.call()       ← parallel API calls
+      ↓
+    Build enriched prompt       ← real data + general knowledge
+      ↓
+    Ollama draft
+      ↓
+    Gemini refine (if API data present)
+      ↓
+    Final answer with real-time data cited
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import urllib.request
 
 from backend.agents.state import AgentState
 
 logger = logging.getLogger(__name__)
 
+OLLAMA_BASE  = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL",    "qwen3:4b")
+GEMINI_KEY   = os.environ.get("GEMINI_API_KEY",  "")
 
-def graph_agent_node(state: AgentState) -> AgentState:
+_SYSTEM = """\
+You are a helpful assistant for AstroNexus AI.
+When real-time data is provided in the context, use it to give accurate,
+specific answers. Always mention the data source.
+If no real-time data is available, answer from general knowledge and say so."""
+
+_SCOPE_NOTE = """\
+
+---
+💡 AstroNexus AI is primarily designed for:
+  • Scientific paper Q&A — upload a PDF and ask questions
+  • Satellite image analysis — upload an image for AI analysis
+  • Knowledge graph queries — ask about authors, models, datasets"""
+
+
+def _call_ollama(prompt: str) -> str:
+    payload = json.dumps({
+        "model":  OLLAMA_MODEL,
+        "prompt": prompt,
+        "system": _SYSTEM,
+        "stream": False,
+        "options": {"temperature": 0.3, "num_predict": 600},
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            f"{OLLAMA_BASE}/api/generate",
+            data=payload, headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read()).get("response", "").strip()
+    except Exception as e:
+        logger.warning(f"[GeneralAgent] Ollama failed: {e}")
+        return ""
+
+
+def _call_gemini(prompt: str) -> str:
+    if not GEMINI_KEY:
+        return ""
+    try:
+        import google.genai as genai
+        client   = genai.Client(api_key=GEMINI_KEY)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=f"{_SYSTEM}\n\n{prompt}",
+            config={"temperature": 0.3, "max_output_tokens": 600},
+        )
+        return response.text.strip()
+    except Exception as e:
+        logger.warning(f"[GeneralAgent] Gemini failed: {e}")
+        return ""
+
+
+def general_agent_node(state: AgentState) -> AgentState:
     """
-    LangGraph node: domain-aware knowledge graph Q&A.
-
-    Query strategy:
-        1. Keyword search on Paper/Model/Dataset/Author nodes
-        2. Domain search — find papers in matching domain
-        3. Tag search — find papers tagged with matching keywords
-        4. Combine results into structured answer
+    LangGraph node: handle general and out-of-scope queries.
+    Uses External API Intelligence Layer for real-time data.
     """
     query = state.get("query", "")
-    logger.info(f"[GraphAgent] Query: {query[:60]}")
+    logger.info(f"[GeneralAgent] Query: {query[:60]}")
 
-    STOP_WORDS = {
-        "who", "what", "when", "where", "how", "the", "is", "are",
-        "was", "did", "does", "a", "an", "of", "in", "to", "for",
-        "and", "or", "by", "at", "on", "authored", "written",
-    }
-
-    keywords = [
-        w.strip("?.,!\"'").lower()
-        for w in query.split()
-        if len(w.strip("?.,!\"'")) > 3
-        and w.strip("?.,!\"'").lower() not in STOP_WORDS
-    ][:5]
-
-    logger.info(f"[GraphAgent] Keywords: {keywords}")
+    # ── Step 1: API Intelligence Layer ────────────────────────────────────────
+    api_context = ""
+    api_names   = []
 
     try:
-        from backend.graph.neo4j_client import _get_driver, get_graph_stats
+        from backend.agents.api_router  import select_apis
+        from backend.agents.api_fusion  import call_apis, format_for_prompt
 
-        driver  = _get_driver()
-        results = []
+        candidates = select_apis(query)
 
-        with driver.session() as session:
-
-            # ── Query 1: Entity search (papers, models, datasets, authors) ─────
-            for kw in keywords:
-                rows = session.run(
-                    """
-                    MATCH (n)
-                    WHERE (n:Paper OR n:Model OR n:Dataset OR n:Author)
-                      AND toLower(coalesce(n.name, n.title, ''))
-                          CONTAINS toLower($kw)
-                    OPTIONAL MATCH (n)-[r]->(m)
-                    RETURN
-                        labels(n)[0]                         AS type,
-                        coalesce(n.name, n.title, '')        AS name,
-                        type(r)                              AS relation,
-                        coalesce(m.name, m.title, '')        AS related
-                    LIMIT 8
-                    """,
-                    kw=kw,
-                ).data()
-                results.extend(rows)
-
-            # ── Query 2: Domain search ─────────────────────────────────────────
-            for kw in keywords:
-                rows = session.run(
-                    """
-                    MATCH (p:Paper)-[:BELONGS_TO]->(d:Domain)
-                    WHERE toLower(d.name) CONTAINS toLower($kw)
-                       OR toLower(d.key)  CONTAINS toLower($kw)
-                    RETURN
-                        'Paper'   AS type,
-                        coalesce(p.title, p.name, '') AS name,
-                        'BELONGS_TO' AS relation,
-                        d.name    AS related
-                    LIMIT 5
-                    """,
-                    kw=kw,
-                ).data()
-                results.extend(rows)
-
-            # ── Query 3: Tag search ────────────────────────────────────────────
-            for kw in keywords:
-                rows = session.run(
-                    """
-                    MATCH (p:Paper)-[:TAGGED]->(t:Tag)
-                    WHERE toLower(t.name) CONTAINS toLower($kw)
-                    RETURN
-                        'Paper'   AS type,
-                        coalesce(p.title, p.name, '') AS name,
-                        'TAGGED'  AS relation,
-                        t.name    AS related
-                    LIMIT 5
-                    """,
-                    kw=kw,
-                ).data()
-                results.extend(rows)
-
-        if not results:
-            stats  = get_graph_stats()
-            answer = (
-                f"No results found in the knowledge graph for: {', '.join(keywords)}\n"
-                f"Graph stats: {stats.get('nodes', {})}\n\n"
-                f"Tip: Ingest related papers via POST /upload to populate the graph."
+        if candidates:
+            logger.info(
+                f"[GeneralAgent] APIs selected: "
+                f"{[c.name for c in candidates]}"
             )
+            results    = call_apis(candidates)
+            api_context = format_for_prompt(results)
+            api_names   = [r.api_name for r in results if r.success]
         else:
-            # Deduplicate and format
-            lines = [f"Knowledge graph results for '{query[:50]}':\n"]
-            seen  = set()
-
-            for row in results[:20]:
-                name    = row.get("name", "").strip()
-                related = row.get("related", "").strip()
-                rel     = row.get("relation", "")
-                rtype   = row.get("type", "Node")
-
-                if not name:
-                    continue
-
-                key = f"{name}:{related}:{rel}"
-                if key in seen:
-                    continue
-                seen.add(key)
-
-                if rel and related:
-                    lines.append(
-                        f"  {rtype}: {name} -> [{rel}] -> {related}"
-                    )
-                else:
-                    lines.append(f"  {rtype}: {name}")
-
-            answer = "\n".join(lines)
-            logger.info(f"[GraphAgent] Found {len(results)} graph results")
-
-        graph_context = answer
-
-    except ImportError as e:
-        logger.error(f"[GraphAgent] Import error: {e}")
-        answer        = f"Graph agent import error: {e}"
-        graph_context = ""
+            logger.info("[GeneralAgent] No APIs triggered for this query")
 
     except Exception as e:
-        logger.warning(f"[GraphAgent] Neo4j unavailable: {e}")
-        answer = (
-            f"Knowledge graph offline or error: {e}\n"
-            f"Start Neo4j: docker start astronexus-neo4j"
-        )
-        graph_context = ""
+        logger.warning(f"[GeneralAgent] API layer failed (non-fatal): {e}")
 
-    logger.info(f"[GraphAgent] Answer: {answer[:120]}...")
-    return {**state, "graph_context": graph_context, "final_answer": answer}
+    # ── Step 2: Build prompt ───────────────────────────────────────────────────
+    prompt_parts = []
+    if api_context:
+        prompt_parts.append(api_context)
+        prompt_parts.append("")
+    prompt_parts.append(f"Question: {query}")
+    if api_context:
+        prompt_parts.append(
+            "\nUse the real-time data above to answer specifically and accurately. "
+            "Cite the data source."
+        )
+    else:
+        prompt_parts.append(
+            "\nAnswer from general knowledge. Note that this is general knowledge, "
+            "not real-time data."
+        )
+
+    full_prompt = "\n".join(prompt_parts)
+
+    # ── Step 3: Generate ───────────────────────────────────────────────────────
+    answer = ""
+
+    if api_context and GEMINI_KEY:
+        # Real data present → Gemini for better synthesis
+        logger.info("[GeneralAgent] Real-time data available → Gemini")
+        answer = _call_gemini(full_prompt)
+
+    if not answer:
+        logger.info("[GeneralAgent] Calling Ollama...")
+        answer = _call_ollama(full_prompt)
+
+    if not answer:
+        answer = (
+            "I was unable to retrieve data for this query. "
+            "Please check that Ollama is running."
+        )
+
+    # ── Step 4: Add scope note only if no real API data ────────────────────────
+    if not api_names:
+        answer += _SCOPE_NOTE
+    else:
+        answer += f"\n\n*Data sourced from: {', '.join(api_names)}*"
+
+    logger.info(
+        f"[GeneralAgent] Done — "
+        f"apis_used={api_names} "
+        f"chars={len(answer)}"
+    )
+
+    return {
+        **state,
+        "final_answer": answer,
+        "metadata": {
+            **(state.get("metadata") or {}),
+            "apis_called":  api_names,
+            "had_real_data": bool(api_names),
+        },
+    }

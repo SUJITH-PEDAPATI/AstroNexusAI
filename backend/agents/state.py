@@ -17,6 +17,13 @@ class AgentState(TypedDict, total=False):
     audio_path:       Optional[str]             # input speech file if any
     image_path:       Optional[str]             # input satellite image if any
 
+    # Multi-turn conversation
+    conversation_history: list[dict[str, Any]] # list of {turn, query, answer, query_type}
+    turn_count:           int                  # current turn number (1-indexed)
+
+    # Per-run metadata (paper_loaded, paper_id, image_path, evaluation, …)
+    metadata:         dict[str, Any]
+
     # RAG / Research context
     retrieved_docs:   list[dict[str, Any]]
     rag_context:      str
@@ -29,4 +36,8 @@ class AgentState(TypedDict, total=False):
 
     # Final combined response
     final_answer:     Optional[str]
+    audio_out:        Optional[str]             # output TTS audio path
     error:            Optional[str]
+
+    # Paper context — must be a declared field so LangGraph doesn't drop it
+    paper_loaded:     bool                      # True if a paper has been ingested

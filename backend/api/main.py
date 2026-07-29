@@ -1,0 +1,509 @@
+"""
+AstroNexus AI — FastAPI Backend
+
+Endpoints:
+    POST /upload          — ingest a PDF paper
+    POST /caption         — caption a satellite image
+    POST /segment         — run SAM2 segmentation
+    POST /research        — ask a question about uploaded papers
+    POST /graph           — query the knowledge graph
+    POST /voice/chat      — voice note → answer → MP3
+    GET  /health          — system health check
+
+Run:
+    uvicorn backend.api.main:app --reload --port 8000
+"""
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import tempfile
+import time
+import uuid
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger(__name__)
+
+# ── Output dirs ───────────────────────────────────────────────────────────────
+UPLOAD_DIR = Path("data/uploads")
+OUTPUT_DIR = Path("output")
+AUDIO_DIR  = Path("output/audio")
+
+for d in [UPLOAD_DIR, OUTPUT_DIR, AUDIO_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# APP
+# ══════════════════════════════════════════════════════════════════════════════
+
+app = FastAPI(
+    title=       "AstroNexus AI",
+    description= "Hybrid Research Intelligence Platform",
+    version=     "1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=     os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_credentials= True,
+    allow_methods=     ["*"],
+    allow_headers=     ["*"],
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RESPONSE MODELS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class HealthResponse(BaseModel):
+    status:   str
+    services: dict
+    version:  str = "1.0.0"
+
+
+class UploadResponse(BaseModel):
+    paper_id:        str
+    title:           str
+    chunks:          int
+    authors:         list[str]
+    keywords:        list[str]
+    domain:          str
+    pipeline_stages: list[str]
+    message:         str
+
+
+class ResearchResponse(BaseModel):
+    answer:          str
+    confidence:      str
+    grounding_score: float
+    relevance_score: float
+    citations:       list[dict]
+    warnings:        list[str]
+    is_reliable:     bool
+    sources:         str
+    ollama_used:     bool
+    gemini_used:     bool
+
+
+class GraphResponse(BaseModel):
+    answer:  str
+    results: list[dict]
+    query:   str
+
+
+class CaptionResponse(BaseModel):
+    caption:          str
+    detailed_caption: str
+    bounding_boxes:   list[dict]
+    keywords:         list[str]
+    model:            str
+
+
+class SegmentResponse(BaseModel):
+    mask_count: int
+    segments:   list[dict]
+    viz_path:   str
+
+
+class VoiceResponse(BaseModel):
+    transcript:  str
+    answer:      str
+    audio_url:   str
+    confidence:  str
+    is_reliable: bool
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HEALTH
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/health", response_model=HealthResponse)
+async def health():
+    """Check status of all services."""
+    services = {}
+
+    # Qdrant
+    try:
+        from backend.rag.vector_store import get_collection_info
+        info = get_collection_info()
+        services["qdrant"] = {
+            "status": "online",
+            "points": info.get("total_points", 0),
+        }
+    except Exception as e:
+        services["qdrant"] = {"status": "offline", "error": str(e)}
+
+    # Neo4j
+    try:
+        from backend.graph.neo4j_client import get_graph_stats
+        stats = get_graph_stats()
+        services["neo4j"] = {
+            "status": "online",
+            "nodes":  stats.get("total_nodes", 0),
+        }
+    except Exception as e:
+        services["neo4j"] = {"status": "offline", "error": str(e)}
+
+    # Ollama
+    try:
+        import urllib.request
+        urllib.request.urlopen(
+            f"{os.environ.get('OLLAMA_BASE_URL','http://localhost:11434')}/api/tags",
+            timeout=3,
+        )
+        services["ollama"] = {"status": "online"}
+    except Exception:
+        services["ollama"] = {"status": "offline"}
+
+    # Gemini
+    services["gemini"] = {
+        "status": "configured" if os.environ.get("GEMINI_API_KEY") else "not configured"
+    }
+
+    overall = (
+        "healthy"
+        if services.get("qdrant", {}).get("status") == "online"
+        and services.get("neo4j", {}).get("status") == "online"
+        else "degraded"
+    )
+
+    return HealthResponse(status=overall, services=services)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UPLOAD — PDF ingestion
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/upload", response_model=UploadResponse)
+async def upload_paper(file: UploadFile = File(...)):
+    """
+    Ingest a PDF research paper.
+
+    Pipeline:
+        PDF → chunks → embeddings → Qdrant
+            → entity extraction → Neo4j
+            → domain classification → keywords → Neo4j
+    """
+    if not file.filename.lower().endswith((".pdf", ".docx", ".md", ".txt")):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported format: {file.filename}. Supported: PDF, DOCX, MD, TXT",
+        )
+
+    # Save upload
+    save_path = UPLOAD_DIR / f"{uuid.uuid4()}_{file.filename}"
+    with open(save_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    logger.info(f"[API/upload] Saved: {save_path}")
+
+    try:
+        # Ingest
+        from backend.ingestion.paper_ingestion import ingest_paper
+        from backend.ingestion.chunking        import chunk_document
+        from backend.embeddings                import embed_chunks
+        from backend.rag                       import upsert_chunks
+        from backend.graph.graph_builder       import build_graph_from_document
+
+        t0  = time.perf_counter()
+        doc = ingest_paper(save_path)
+
+        chunks   = chunk_document(doc)
+        embedded = embed_chunks(chunks)
+        upsert_chunks(embedded)
+
+        # Graph — entities + keywords
+        extraction = build_graph_from_document(doc)
+
+        elapsed = time.perf_counter() - t0
+        logger.info(f"[API/upload] Done in {elapsed:.1f}s")
+
+        # Collect keyword names from Neo4j
+        keywords = []
+        try:
+            from backend.graph.neo4j_client import _get_driver
+            driver = _get_driver()
+            with driver.session() as s:
+                rows = s.run(
+                    "MATCH (p:Paper {paper_id:$pid})-[:TAGGED]->(k:Keyword) "
+                    "RETURN k.name AS kw",
+                    pid=doc.paper_id,
+                ).data()
+            keywords = [r["kw"] for r in rows]
+        except Exception:
+            pass
+
+        # Domain
+        domain = ""
+        try:
+            from backend.graph.neo4j_client import _get_driver
+            driver = _get_driver()
+            with driver.session() as s:
+                row = s.run(
+                    "MATCH (p:Paper {paper_id:$pid})-[:BELONGS_TO]->(d:Domain) "
+                    "RETURN d.name AS name LIMIT 1",
+                    pid=doc.paper_id,
+                ).single()
+            domain = row["name"] if row else ""
+        except Exception:
+            pass
+
+        return UploadResponse(
+            paper_id=        doc.paper_id,
+            title=           doc.metadata.title or file.filename,
+            chunks=          len(chunks),
+            authors=         [a.name for a in extraction.authors],
+            keywords=        keywords,
+            domain=          domain,
+            pipeline_stages= ["ingestion","chunking","embedding",
+                              "qdrant","entity_extraction","neo4j","keywords"],
+            message=         f"Ingested in {elapsed:.1f}s",
+        )
+
+    except Exception as e:
+        save_path.unlink(missing_ok=True)
+        logger.error(f"[API/upload] Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CAPTION — satellite image
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/caption", response_model=CaptionResponse)
+async def caption_image(file: UploadFile = File(...)):
+    """
+    Caption a satellite image via Gemini Vision.
+    Extracts keywords and writes them to Neo4j.
+    """
+    suffix    = Path(file.filename).suffix.lower()
+    save_path = UPLOAD_DIR / f"{uuid.uuid4()}{suffix}"
+
+    with open(save_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    try:
+        from backend.vision.florence2_captioner import caption_image as cap
+
+        result = cap(save_path, write_to_graph=True)
+
+        keywords = getattr(result, "image_keywords", [])
+
+        return CaptionResponse(
+            caption=          result.caption,
+            detailed_caption= result.detailed_caption or "",
+            bounding_boxes=   result.bounding_boxes,
+            keywords=         keywords,
+            model=            result.model_name,
+        )
+    except Exception as e:
+        logger.error(f"[API/caption] Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SEGMENT — SAM2
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/segment", response_model=SegmentResponse)
+async def segment_image(file: UploadFile = File(...)):
+    """Run SAM2 automatic segmentation on a satellite image."""
+    suffix    = Path(file.filename).suffix.lower()
+    save_path = UPLOAD_DIR / f"{uuid.uuid4()}{suffix}"
+
+    with open(save_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    try:
+        from backend.vision.sam2_segmentor import segment_image as seg
+
+        viz_path = OUTPUT_DIR / f"segmented_{save_path.stem}.png"
+        result   = seg(save_path, save_viz=True, viz_path=viz_path)
+
+        return SegmentResponse(
+            mask_count= result["mask_count"],
+            segments=   result["segments"],
+            viz_path=   str(viz_path),
+        )
+    except Exception as e:
+        logger.error(f"[API/segment] Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RESEARCH — Q&A over uploaded papers
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/research", response_model=ResearchResponse)
+async def research(
+    query:      str           = Form(...),
+    paper_id:   Optional[str] = Form(None),
+    image_path: Optional[str] = Form(None),
+):
+    """
+    Answer a question using the full pipeline:
+    Qdrant + Neo4j + Knowledge Fusion + Ollama + Gemini + Evaluator
+    """
+    try:
+        from backend.agents.orchestrator import run
+
+        result = run(
+            query=        query,
+            paper_loaded= bool(paper_id),
+            paper_id=     paper_id,
+            image_path=   image_path,
+        )
+
+        meta  = result.get("metadata") or {}
+        evl   = meta.get("evaluation") or {}
+
+        return ResearchResponse(
+            answer=          result.get("final_answer", ""),
+            confidence=      evl.get("confidence",      "LOW"),
+            grounding_score= evl.get("grounding_score", 0.0),
+            relevance_score= evl.get("relevance_score", 0.0),
+            citations=       evl.get("citations",       []),
+            warnings=        evl.get("warnings",        []),
+            is_reliable=     evl.get("is_reliable",     False),
+            sources=         result.get("rag_context",  "")[:500],
+            ollama_used=     meta.get("ollama_used",    False),
+            gemini_used=     meta.get("gemini_used",    False),
+        )
+    except Exception as e:
+        logger.error(f"[API/research] Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GRAPH — knowledge graph queries
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/graph", response_model=GraphResponse)
+async def graph_query(query: str = Form(...)):
+    """Query the Neo4j knowledge graph."""
+    try:
+        from backend.agents.orchestrator import run
+
+        result = run(query=query, paper_loaded=False)
+
+        return GraphResponse(
+            answer=  result.get("final_answer", ""),
+            results= [],
+            query=   query,
+        )
+    except Exception as e:
+        logger.error(f"[API/graph] Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VOICE CHAT
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/voice/chat", response_model=VoiceResponse)
+async def voice_chat(
+    audio:    UploadFile      = File(...),
+    paper_id: Optional[str]   = Form(None),
+):
+    """
+    Voice note → STT → Research pipeline → TTS → MP3
+
+    Flow:
+        1. Save audio
+        2. Whisper STT → transcript
+        3. Research agent (Qdrant + Neo4j + Ollama + Gemini + Evaluator)
+        4. Edge TTS → MP3
+        5. Return transcript + answer + audio URL
+    """
+    audio_path = AUDIO_DIR / f"{uuid.uuid4()}_{audio.filename}"
+    with open(audio_path, "wb") as f:
+        shutil.copyfileobj(audio.file, f)
+
+    # Step 1: Transcribe
+    try:
+        from backend.voice.whisper_service import WhisperService
+        stt_result = WhisperService().transcribe(audio_path)
+        transcript = stt_result["text"]
+        logger.info(f"[API/voice] Transcript: {transcript}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"STT failed: {e}")
+
+    # Step 2: Research pipeline
+    try:
+        from backend.agents.orchestrator import run
+        result = run(
+            query=        transcript,
+            audio_path=   str(audio_path),
+            paper_loaded= bool(paper_id),
+            paper_id=     paper_id,
+        )
+        answer = result.get("final_answer", "No answer generated.")
+        meta   = result.get("metadata") or {}
+        evl    = meta.get("evaluation") or {}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Research failed: {e}")
+
+    # Step 3: TTS → MP3
+    audio_out_url = ""
+    try:
+        import edge_tts, asyncio
+
+        out_mp3 = AUDIO_DIR / f"response_{uuid.uuid4()}.mp3"
+        voice   = os.environ.get("TTS_VOICE", "en-US-AriaNeural")
+
+        communicate = edge_tts.Communicate(answer[:800], voice)
+        await communicate.save(str(out_mp3))
+
+        audio_out_url = f"/audio/{out_mp3.name}"
+        logger.info(f"[API/voice] TTS saved: {out_mp3}")
+    except Exception as e:
+        logger.warning(f"[API/voice] TTS failed (non-fatal): {e}")
+
+    return VoiceResponse(
+        transcript=  transcript,
+        answer=      answer,
+        audio_url=   audio_out_url,
+        confidence=  evl.get("confidence",  "LOW"),
+        is_reliable= evl.get("is_reliable", False),
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUDIO FILE SERVE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/audio/{filename}")
+async def serve_audio(filename: str):
+    """Serve generated TTS audio files."""
+    path = AUDIO_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    return FileResponse(path, media_type="audio/mpeg")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RUN
+# ══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "backend.api.main:app",
+        host=    os.environ.get("API_HOST", "0.0.0.0"),
+        port=    int(os.environ.get("API_PORT", "8000")),
+        reload=  os.environ.get("API_RELOAD", "false").lower() == "true",
+    )

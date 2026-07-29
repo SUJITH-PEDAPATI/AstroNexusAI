@@ -1,224 +1,310 @@
 """
-AstroNexus AI — Knowledge Fusion Layer
+AstroNexus AI — Knowledge Fusion v4.0
 
-Merges Qdrant semantic chunks + Neo4j graph context + paper metadata
-into a single structured context before sending to the LLM.
+When paper is uploaded, EVERY answer pulls from three sources:
+    1. Qdrant chunks      — semantic retrieval
+    2. Neo4j graph        — structured entities (authors, models, keywords, domain)
+    3. Conversation history — last 3 turns for pronoun resolution
 
-Called by Research Agent on every query.
+Graph lookup tries paper_id, node_id, id in sequence.
+Logs exactly what was found so empty graph is visible in logs.
 """
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+MAX_HISTORY_TURNS = 3
+MAX_HISTORY_CHARS = 800
+
 
 @dataclass
 class FusedContext:
-    """Single structured context object passed to LLM."""
-    qdrant_chunks:    list[dict] = field(default_factory=list)
-    graph_entities:   dict       = field(default_factory=dict)
-    paper_metadata:   dict       = field(default_factory=dict)
-    image_keywords:   list[str]  = field(default_factory=list)
-    prompt_text:      str        = ""
-    chunk_dicts:      list[dict] = field(default_factory=list)  # for evaluator
+    qdrant_chunks:        list[dict] = field(default_factory=list)
+    graph_entities:       dict       = field(default_factory=dict)
+    image_keywords:       list[str]  = field(default_factory=list)
+    conversation_history: list[dict] = field(default_factory=list)
+    prompt_text:          str        = ""
+    chunk_dicts:          list[dict] = field(default_factory=list)
 
 
-def _get_graph_context(query: str, paper_node_id: str | None) -> dict:
+# ══════════════════════════════════════════════════════════════════════════════
+# GRAPH CONTEXT
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_graph_context(query: str, paper_id: str | None) -> dict:
     """
-    Pull structured facts from Neo4j relevant to this query and paper.
-    Returns dict of entity lists.
+    Pull all entities linked to the paper from Neo4j.
+    Tries paper_id → node_id → id until one matches.
+    Also runs keyword-based search for query terms.
     """
-    context = {
-        "authors":      [],
-        "models":       [],
-        "datasets":     [],
-        "tasks":        [],
-        "keywords":     [],
-        "satellites":   [],
-        "domain":       "",
-        "related_facts":[],
+    empty = {
+        "authors": [], "models": [], "datasets": [], "tasks": [],
+        "keywords": [], "satellites": [], "domain": "", "venue": "",
+        "related_facts": [],
     }
+
+    if not paper_id:
+        return empty
 
     try:
         from backend.graph.neo4j_client import _get_driver
+        driver = _get_driver()
 
-        driver   = _get_driver()
-        keywords = [
+        # ── Step 1: Find paper internal ID ────────────────────────────────────
+        internal_id = None
+        with driver.session() as s:
+            for prop in ["paper_id", "node_id", "id"]:
+                row = s.run(
+                    f"MATCH (p:Paper {{{prop}: $pid}}) "
+                    "RETURN id(p) AS iid, p.title AS title LIMIT 1",
+                    pid=paper_id,
+                ).single()
+                if row:
+                    internal_id = row["iid"]
+                    logger.info(
+                        f"[Fusion] Paper found via {prop}: '{(row['title'] or '')[:50]}'"
+                    )
+                    break
+
+        if internal_id is None:
+            logger.warning(f"[Fusion] Paper not found in Neo4j — id='{paper_id}'")
+            return empty
+
+        # ── Step 2: Get all outgoing relationships ─────────────────────────────
+        ctx = dict(empty)
+        with driver.session() as s:
+            rels = s.run(
+                """
+                MATCH (p)-[r]->(n)
+                WHERE id(p) = $iid
+                RETURN type(r)                           AS rel,
+                       labels(n)[0]                      AS label,
+                       coalesce(n.name, n.title, '')     AS name
+                """,
+                iid=internal_id,
+            ).data()
+
+        REL_MAP = {
+            "AUTHORED_BY":    "authors",
+            "USES":           "models",
+            "SOLVES":         "tasks",
+            "TAGGED":         "keywords",
+            "BELONGS_TO":     "domain",
+            "PRESENTED_AT":   "venue",
+            "EVALUATED_BY":   "metrics",
+        }
+
+        for row in rels:
+            name = (row.get("name") or "").strip()
+            rel  = row.get("rel", "")
+            if not name:
+                continue
+            key = REL_MAP.get(rel)
+            if key == "domain":
+                ctx["domain"] = name
+            elif key == "venue":
+                ctx["venue"] = name
+            elif key and isinstance(ctx.get(key), list):
+                if name not in ctx[key]:
+                    ctx[key].append(name)
+
+        logger.info(
+            f"[Fusion] Graph — "
+            f"authors={len(ctx['authors'])} "
+            f"models={len(ctx['models'])} "
+            f"keywords={len(ctx['keywords'])} "
+            f"domain='{ctx['domain']}'"
+        )
+
+        # ── Step 3: Keyword entity search for query terms ──────────────────────
+        STOP = {"what","who","when","where","how","is","are","the","a","an",
+                "of","in","to","for","and","or","by","this","that","does"}
+        kws  = [
             w.strip("?.,!").lower()
             for w in query.split()
-            if len(w.strip("?.,!")) > 3
+            if len(w.strip("?.,!")) > 3 and w.lower() not in STOP
         ][:6]
 
-        with driver.session() as s:
+        if kws:
+            with driver.session() as s:
+                for kw in kws:
+                    rows = s.run(
+                        """
+                        MATCH (n)
+                        WHERE (n:Keyword OR n:Algorithm OR n:Dataset
+                               OR n:Task OR n:Model OR n:Satellite)
+                          AND toLower(coalesce(n.name,'')) CONTAINS toLower($kw)
+                        OPTIONAL MATCH (p2:Paper)-[:TAGGED|USES|SOLVES]->(n)
+                        RETURN n.name       AS entity,
+                               labels(n)[0] AS type,
+                               collect(DISTINCT p2.title)[..2] AS papers
+                        LIMIT 5
+                        """,
+                        kw=kw,
+                    ).data()
+                    for row in rows:
+                        entity = (row.get("entity") or "").strip()
+                        if not entity:
+                            continue
+                        papers = [p for p in row.get("papers", []) if p]
+                        fact   = f"{row.get('type','Entity')}: {entity}"
+                        if papers:
+                            fact += f" (in: {', '.join(papers[:2])})"
+                        if fact not in ctx["related_facts"]:
+                            ctx["related_facts"].append(fact)
 
-            # If we know the paper, get its full graph context
-            if paper_node_id:
-                try:
-                    from backend.graph.neo4j_client import get_paper_graph_context
-                    ctx = get_paper_graph_context(paper_node_id)
-                    if ctx:
-                        context.update({
-                            "authors":    ctx.get("authors",    []),
-                            "models":     ctx.get("models",     []) + ctx.get("algorithms", []),
-                            "datasets":   ctx.get("datasets",   []),
-                            "tasks":      ctx.get("tasks",      []),
-                            "keywords":   ctx.get("keywords",   []),
-                            "satellites": ctx.get("satellites", []),
-                            "domain":     ctx.get("domain",     ""),
-                        })
-                except Exception:
-                    pass
-
-            # Also search graph for query keywords
-            for kw in keywords:
-                rows = s.run(
-                    """
-                    MATCH (n)
-                    WHERE (n:Keyword OR n:Algorithm OR n:Dataset OR n:Task)
-                      AND toLower(n.name) CONTAINS toLower($kw)
-                    OPTIONAL MATCH (p:Paper)-[:TAGGED|USES|SOLVES]->(n)
-                    RETURN n.name AS entity, labels(n)[0] AS type,
-                           collect(DISTINCT p.title)[..3] AS papers
-                    LIMIT 5
-                    """,
-                    kw=kw,
-                ).data()
-
-                for row in rows:
-                    fact = (
-                        f"{row['type']}: {row['entity']}"
-                        + (f" (used in: {', '.join(row['papers'])})"
-                           if row.get("papers") else "")
-                    )
-                    if fact not in context["related_facts"]:
-                        context["related_facts"].append(fact)
+        return ctx
 
     except Exception as e:
-        logger.warning(f"[KnowledgeFusion] Neo4j context failed (non-fatal): {e}")
+        logger.warning(f"[Fusion] Neo4j failed (non-fatal): {e}")
+        return empty
 
-    return context
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CONVERSATION HISTORY
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _format_history(history: list[dict]) -> str:
+    if not history:
+        return ""
+    recent = history[-MAX_HISTORY_TURNS:]
+    lines  = [
+        "=== CONVERSATION HISTORY ===",
+        "Use this to resolve references like 'it', 'this', 'the model'.\n",
+    ]
+    total = 0
+    for turn in recent:
+        q     = turn.get("query", "")
+        a     = (turn.get("answer", "") or "")[:250] + "..."
+        entry = f"[Turn {turn.get('turn','?')}]\nUser: {q}\nAssistant: {a}\n"
+        if total + len(entry) > MAX_HISTORY_CHARS:
+            break
+        lines.append(entry)
+        total += len(entry)
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROMPT BUILDER
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _build_prompt(
-    query:        str,
-    chunks:       list[dict],
-    graph_ctx:    dict,
-    image_kws:    list[str],
+    query:    str,
+    chunks:   list[dict],
+    graph:    dict,
+    image_kws:list[str],
+    history:  list[dict],
 ) -> str:
-    """
-    Assemble the final structured prompt from all sources.
-    """
     parts = []
 
-    # ── Qdrant chunks ──────────────────────────────────────────────────────────
+    # 1. History
+    hist = _format_history(history)
+    if hist:
+        parts.append(hist)
+
+    # 2. Qdrant chunks
     if chunks:
         parts.append("=== DOCUMENT EXCERPTS ===")
         for i, c in enumerate(chunks[:5], 1):
-            payload = c.get("payload", c)
-            section = payload.get("section", "Unknown")
-            page    = payload.get("page_num", "?")
-            score   = round(c.get("score", 0.0), 3)
-            text    = payload.get("text", "")[:600]
+            p    = c.get("payload", c)
+            text = (p.get("text") or "")[:600]
             parts.append(
-                f"[{i}] Section: {section} | Page: {page} | Score: {score}\n{text}"
+                f"[{i}] {p.get('section','?')} | p.{p.get('page_num','?')} "
+                f"| score={c.get('score',0):.3f}\n{text}"
             )
 
-    # ── Graph context ──────────────────────────────────────────────────────────
+    # 3. Graph context — ALWAYS included when paper loaded
     graph_lines = []
+    if graph.get("authors"):
+        graph_lines.append(f"Authors     : {', '.join(graph['authors'][:5])}")
+    if graph.get("domain"):
+        graph_lines.append(f"Domain      : {graph['domain']}")
+    if graph.get("models"):
+        graph_lines.append(f"Models      : {', '.join(graph['models'][:5])}")
+    if graph.get("datasets"):
+        graph_lines.append(f"Datasets    : {', '.join(graph['datasets'][:5])}")
+    if graph.get("tasks"):
+        graph_lines.append(f"Tasks       : {', '.join(graph['tasks'][:5])}")
+    if graph.get("keywords"):
+        graph_lines.append(f"Keywords    : {', '.join(graph['keywords'][:10])}")
+    if graph.get("venue"):
+        graph_lines.append(f"Venue       : {graph['venue']}")
+    if graph.get("related_facts"):
+        graph_lines.append("Related facts:")
+        for f in graph["related_facts"][:5]:
+            graph_lines.append(f"  • {f}")
 
-    if graph_ctx.get("domain"):
-        graph_lines.append(f"Domain: {graph_ctx['domain']}")
-    if graph_ctx.get("authors"):
-        graph_lines.append(f"Authors: {', '.join(graph_ctx['authors'][:5])}")
-    if graph_ctx.get("models"):
-        graph_lines.append(f"Models/Algorithms: {', '.join(graph_ctx['models'][:5])}")
-    if graph_ctx.get("datasets"):
-        graph_lines.append(f"Datasets: {', '.join(graph_ctx['datasets'][:5])}")
-    if graph_ctx.get("tasks"):
-        graph_lines.append(f"Tasks: {', '.join(graph_ctx['tasks'][:5])}")
-    if graph_ctx.get("keywords"):
-        graph_lines.append(f"Keywords: {', '.join(graph_ctx['keywords'][:8])}")
-    if graph_ctx.get("satellites"):
-        graph_lines.append(f"Satellites: {', '.join(graph_ctx['satellites'][:5])}")
-    if graph_ctx.get("related_facts"):
-        graph_lines.append("Related graph facts:")
-        for fact in graph_ctx["related_facts"][:5]:
-            graph_lines.append(f"  • {fact}")
-
+    parts.append("=== KNOWLEDGE GRAPH CONTEXT ===")
     if graph_lines:
-        parts.append("=== KNOWLEDGE GRAPH CONTEXT ===")
         parts.extend(graph_lines)
+    else:
+        parts.append(
+            "No entities found for this paper in Neo4j yet. "
+            "Re-ingest the paper to populate the graph."
+        )
 
-    # ── Image keywords ─────────────────────────────────────────────────────────
+    # 4. Image keywords
     if image_kws:
-        parts.append("=== IMAGE ANALYSIS KEYWORDS ===")
-        parts.append(", ".join(image_kws))
+        parts.append(f"=== IMAGE KEYWORDS ===\n{', '.join(image_kws)}")
 
-    # ── Question ───────────────────────────────────────────────────────────────
-    parts.append(f"=== QUESTION ===\n{query}")
+    # 5. Question
+    parts.append(f"=== CURRENT QUESTION ===\n{query}")
 
     return "\n\n".join(parts)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PUBLIC API
+# ══════════════════════════════════════════════════════════════════════════════
+
 def fuse(
-    query:          str,
-    qdrant_chunks:  list[dict],
-    paper_node_id:  str | None = None,
-    image_keywords: list[str]  = None,
+    query:                str,
+    qdrant_chunks:        list[dict],
+    paper_node_id:        str | None  = None,
+    image_keywords:       list[str]   = None,
+    conversation_history: list[dict]  = None,
 ) -> FusedContext:
     """
-    Merge all knowledge sources into one structured context.
-
-    Args:
-        query:          User question
-        qdrant_chunks:  Retrieved chunks from Qdrant (list of dicts with score)
-        paper_node_id:  Neo4j node_id of the current paper (optional)
-        image_keywords: Keywords extracted from satellite image caption (optional)
-
-    Returns:
-        FusedContext with prompt_text ready for LLM
+    Merge Qdrant chunks + Neo4j graph + history into one structured prompt.
+    Graph is always fetched when paper_node_id is provided.
     """
-    image_keywords = image_keywords or []
+    image_keywords       = image_keywords       or []
+    conversation_history = conversation_history or []
 
-    logger.info(
-        f"[KnowledgeFusion] Fusing — "
-        f"chunks={len(qdrant_chunks)} "
-        f"paper_id={paper_node_id is not None} "
-        f"image_kws={len(image_keywords)}"
+    graph = _get_graph_context(query, paper_node_id)
+
+    prompt = _build_prompt(
+        query, qdrant_chunks, graph, image_keywords, conversation_history
     )
 
-    # Pull graph context
-    graph_ctx = _get_graph_context(query, paper_node_id)
-
-    logger.info(
-        f"[KnowledgeFusion] Graph — "
-        f"authors={len(graph_ctx['authors'])} "
-        f"models={len(graph_ctx['models'])} "
-        f"keywords={len(graph_ctx['keywords'])} "
-        f"facts={len(graph_ctx['related_facts'])}"
-    )
-
-    # Build unified prompt
-    prompt = _build_prompt(query, qdrant_chunks, graph_ctx, image_keywords)
-
-    # Chunk dicts for evaluator
     chunk_dicts = []
     for c in qdrant_chunks:
-        payload = c.get("payload", c)
+        p = c.get("payload", c)
         chunk_dicts.append({
             "score":   c.get("score", 0.0),
-            "text":    payload.get("text", ""),
-            "section": payload.get("section", ""),
-            "page_num":payload.get("page_num", "?"),
-            "title":   payload.get("title", ""),
+            "text":    p.get("text", ""),
+            "section": p.get("section", ""),
+            "page_num":p.get("page_num", "?"),
+            "title":   p.get("title", ""),
+            "payload": p,
         })
 
+    logger.info(
+        f"[Fusion] prompt={len(prompt)} chars  "
+        f"chunks={len(chunk_dicts)}  "
+        f"graph_authors={len(graph['authors'])}  "
+        f"graph_kws={len(graph['keywords'])}"
+    )
+
     return FusedContext(
-        qdrant_chunks=  qdrant_chunks,
-        graph_entities= graph_ctx,
-        image_keywords= image_keywords,
-        prompt_text=    prompt,
-        chunk_dicts=    chunk_dicts,
+        qdrant_chunks=       qdrant_chunks,
+        graph_entities=      graph,
+        image_keywords=      image_keywords,
+        conversation_history=conversation_history,
+        prompt_text=         prompt,
+        chunk_dicts=         chunk_dicts,
     )

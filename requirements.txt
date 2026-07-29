@@ -37,3 +37,10 @@ edge-tts
 pyttsx3
 langgraph
 langchain-core
+fastapi
+uvicorn
+python-multipart
+google-genai
+google-generativeai
+sentence-transformers
+rank-bm25
