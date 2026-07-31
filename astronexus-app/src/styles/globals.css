@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #07080A;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+  background: var(--bg);
+  color: #E2E8F0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+body { background: var(--bg); font-family: var(--font-body); overflow-x: hidden; }
+
+.lenis.lenis-smooth { scroll-behavior: auto !important; }
+
+::selection { background: rgba(108,162,193,0.3); color: #fff; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(108,162,193,0.25); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(108,162,193,0.4); }
+
+:focus-visible { outline: 2px solid rgba(108,162,193,0.6); outline-offset: 2px; border-radius: 4px; }
+
+/* Markdown / chat prose */
+.prose-anx { color: #CBD5E1; line-height: 1.7; font-size: 0.9rem; }
+.prose-anx h1, .prose-anx h2, .prose-anx h3 { color: #F5F7FA; font-family: var(--font-display); font-weight: 600; margin: 1em 0 0.5em; }
+.prose-anx p { margin: 0.6em 0; }
+.prose-anx ul, .prose-anx ol { margin: 0.6em 0; padding-left: 1.4em; }
+.prose-anx li { margin: 0.3em 0; }
+.prose-anx ul { list-style: disc; }
+.prose-anx ol { list-style: decimal; }
+.prose-anx strong { color: #F5F7FA; font-weight: 600; }
+.prose-anx a { color: #7DD3FC; text-decoration: underline; }
+.prose-anx code { background: rgba(255,255,255,0.06); padding: 0.15em 0.4em; border-radius: 4px; font-family: var(--font-mono); font-size: 0.85em; color: #A5D8F0; }
+.prose-anx pre { background: #0A0E14; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 1em; overflow-x: auto; margin: 0.8em 0; }
+.prose-anx pre code { background: none; padding: 0; color: #E2E8F0; }
+.prose-anx blockquote { border-left: 3px solid rgba(108,162,193,0.5); padding-left: 1em; color: #94A3B8; margin: 0.8em 0; }
+.prose-anx table { width: 100%; border-collapse: collapse; margin: 0.8em 0; font-size: 0.85em; }
+.prose-anx th, .prose-anx td { border: 1px solid rgba(255,255,255,0.08); padding: 0.5em 0.7em; text-align: left; }
+.prose-anx .katex { color: #E2E8F0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
