@@ -1,52 +1,107 @@
 import type { User } from '@/types'
-import { http } from './http'
+import { http, ApiError } from './http'
 import { apiConfig } from '@/lib/config'
 import { uid } from '@/lib/utils'
 
-/**
- * Auth service abstraction. Ships with a local demo implementation that works
- * with zero backend, so the app runs end-to-end out of the box. To use real
- * auth, implement these three methods against your API (or NextAuth/Clerk) —
- * the rest of the app only depends on this interface.
- */
 const AVATAR_COLORS = ['#3B82F6', '#6CA2C1', '#0B3D91', '#D4B483', '#60A5FA']
 
+function demoUser(email: string, provider: User['provider'] = 'email'): User {
+  return {
+    id: uid(),
+    name:
+      email
+        .split('@')[0]
+        .replace(/[._]/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase()) || 'Researcher',
+    email,
+    avatarColor: AVATAR_COLORS[email.length % AVATAR_COLORS.length],
+    provider,
+    createdAt: new Date().toISOString(),
+  }
+}
+
+/**
+ * Normalise the backend auth response.
+ *
+ * FastAPI jwt responses typically look like one of:
+ *   { access_token, token_type, user: {...} }   ← preferred
+ *   { access_token, token_type, ...userFields }  ← flat
+ *   { token, user: {...} }                       ← some setups
+ *
+ * We handle all three so you don't have to change the backend.
+ */
+function parseAuthResponse(raw: Record<string, unknown>): { user: User; token: string } {
+  const token =
+    (raw.access_token as string) ??
+    (raw.token as string) ??
+    ''
+
+  // Nested user object
+  if (raw.user && typeof raw.user === 'object') {
+    return { user: raw.user as User, token }
+  }
+
+  // Flat response — the user fields are at the top level alongside the token
+  // Strip token fields; what remains are the user fields
+  const rest = Object.fromEntries(
+    Object.entries(raw).filter(([k]) => !['access_token','token_type','token'].includes(k))
+  )
+  return { user: rest as unknown as User, token }
+}
+
 export const authService = {
-  async login(email: string, _password: string, provider: User['provider'] = 'email'): Promise<User> {
-    const remote = await http<User>(apiConfig.endpoints.login, {
-      method: 'POST',
-      body: JSON.stringify({ email, password: _password }),
-    })
-    if (remote) return remote
-    // Demo fallback
+  /**
+   * Returns { user, token } on success.
+   * Throws ApiError on 4xx (wrong credentials).
+   * Falls back to demo when backend is unreachable (null response).
+   */
+  async login(
+    email: string,
+    password: string,
+    provider: User['provider'] = 'email',
+  ): Promise<{ user: User; token: string }> {
+    try {
+      const raw = await http<Record<string, unknown>>(apiConfig.endpoints.login, {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      })
+      if (raw) return parseAuthResponse(raw)
+    } catch (err) {
+      if (err instanceof ApiError) throw err
+    }
+    // Demo fallback — backend unreachable
+    return { user: demoUser(email, provider), token: '' }
+  },
+
+  async register(
+    name: string,
+    email: string,
+    password: string,
+  ): Promise<{ user: User; token: string }> {
+    try {
+      const raw = await http<Record<string, unknown>>(apiConfig.endpoints.register, {
+        method: 'POST',
+        body: JSON.stringify({ name, email, password }),
+      })
+      if (raw) return parseAuthResponse(raw)
+    } catch (err) {
+      if (err instanceof ApiError) throw err
+    }
     return {
-      id: uid(),
-      name: email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) || 'Researcher',
-      email,
-      avatarColor: AVATAR_COLORS[email.length % AVATAR_COLORS.length],
-      provider,
-      createdAt: new Date().toISOString(),
+      user: {
+        id: uid(),
+        name,
+        email,
+        avatarColor: AVATAR_COLORS[name.length % AVATAR_COLORS.length],
+        provider: 'email',
+        createdAt: new Date().toISOString(),
+      },
+      token: '',
     }
   },
 
-  async register(name: string, email: string, _password: string): Promise<User> {
-    const remote = await http<User>(apiConfig.endpoints.register, {
-      method: 'POST',
-      body: JSON.stringify({ name, email, password: _password }),
-    })
-    if (remote) return remote
-    return {
-      id: uid(),
-      name,
-      email,
-      avatarColor: AVATAR_COLORS[name.length % AVATAR_COLORS.length],
-      provider: 'email',
-      createdAt: new Date().toISOString(),
-    }
-  },
-
-  async social(provider: 'google' | 'github'): Promise<User> {
-    // In production: redirect to OAuth. Demo: instant session.
-    return this.login(`${provider}.user@astronexus.ai`, 'oauth', provider)
+  async social(provider: 'google' | 'github'): Promise<{ user: User; token: string }> {
+    // In production, redirect to OAuth. Demo: instant session.
+    return { user: demoUser(`${provider}.user@astronexus.ai`, provider), token: '' }
   },
 }

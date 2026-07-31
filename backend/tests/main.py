@@ -496,6 +496,64 @@ async def serve_audio(filename: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# CHAT — JSON endpoint consumed by the Next.js frontend
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ChatRequest(BaseModel):
+    """
+    Frontend sends:  POST /chat
+                     Content-Type: application/json
+                     { "query": "...", "paper_id": null, "conversation_history": null }
+    """
+    query:                str
+    paper_id:             Optional[str] = None
+    conversation_history: Optional[list] = None
+
+
+class ChatResponse(BaseModel):
+    answer:      str
+    grade:       str   # "A" | "B" | "C"
+    citations:   list[dict]
+    confidence:  str   = ""
+    is_reliable: bool  = False
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    """
+    Primary chat endpoint for the web frontend.
+    Accepts JSON (not Form), delegates to the same orchestrator pipeline
+    as /research — no model logic is duplicated.
+    """
+    try:
+        from backend.agents.orchestrator import run
+
+        result = run(
+            query=                req.query,
+            paper_loaded=         bool(req.paper_id),
+            paper_id=             req.paper_id,
+            conversation_history= req.conversation_history or [],
+        )
+
+        meta  = result.get("metadata") or {}
+        evl   = meta.get("evaluation") or {}
+        conf  = evl.get("confidence", "LOW")
+
+        grade_map = {"HIGH": "A", "MEDIUM": "B", "LOW": "C"}
+
+        return ChatResponse(
+            answer=      result.get("final_answer", ""),
+            grade=       grade_map.get(conf, "B"),
+            citations=   evl.get("citations", []),
+            confidence=  conf,
+            is_reliable= evl.get("is_reliable", False),
+        )
+    except Exception as e:
+        logger.error(f"[API/chat] Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # RUN
 # ══════════════════════════════════════════════════════════════════════════════
 

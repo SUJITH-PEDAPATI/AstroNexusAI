@@ -30,18 +30,25 @@ export function VideoHero() {
 
   return (
     <section ref={containerRef} className="relative h-screen w-full overflow-hidden">
-      <motion.div className="absolute inset-0" style={reduced ? undefined : { scale, opacity }}>
+      <motion.div
+        className="absolute inset-0"
+        style={reduced ? undefined : { scale, opacity, willChange: 'transform', backfaceVisibility: 'hidden' }}
+      >
         <video ref={videoRef} className="h-full w-full object-cover" autoPlay muted loop playsInline
-          preload="auto" poster="/images/hero-poster.jpg" aria-hidden>
-          <source src="/videos/hero.webm" type="video/webm" />
+          preload="auto" poster="/images/hero-poster.jpg" aria-hidden
+          style={{ transform: 'translateZ(0)', backfaceVisibility: 'hidden' }}>
+          {/* Highest-fidelity source first. Browsers use the first source they can
+              play, so the ~2 Mbps H.264 master is chosen over the smaller VP9
+              re-encode — every browser now gets the sharper file. */}
           <source src="/videos/hero.mp4" type="video/mp4" />
+          <source src="/videos/hero.webm" type="video/webm" />
         </video>
       </motion.div>
 
       {/* Cinematic grading (inherits the video's palette) */}
-      <div className="absolute inset-0 bg-gradient-to-b from-void/60 via-void/20 to-void" />
+      <div className="absolute inset-0 bg-gradient-to-b from-void/45 via-void/10 to-void" />
       <div className="absolute inset-0 bg-gradient-to-r from-void/80 via-transparent to-transparent" />
-      <div className="pointer-events-none absolute inset-0" style={{ boxShadow: 'inset 0 0 220px 70px rgba(7,8,10,0.9)' }} />
+      <div className="pointer-events-none absolute inset-0" style={{ boxShadow: 'inset 0 0 180px 40px rgba(7,8,10,0.72)' }} />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-void to-transparent" />
 
       {/* Content */}

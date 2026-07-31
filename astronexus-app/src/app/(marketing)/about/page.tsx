@@ -40,6 +40,66 @@ export default function AboutPage() {
         </Parallax>
       </section>
 
+      {/* About the video / what the platform does */}
+      <section className="px-6 py-20">
+        <div className="mx-auto max-w-3xl">
+          <Reveal preset="fade">
+            <span className="inline-flex items-center gap-2 rounded-full border border-glow/25 bg-glow/10 px-3.5 py-1.5 text-xs font-medium tracking-wide text-glow-soft backdrop-blur-sm">
+              The view from orbit
+            </span>
+          </Reveal>
+          <Reveal preset="blur" index={1}>
+            <h2 className="mt-6 font-display text-3xl font-bold leading-[1.1] tracking-tight text-light md:text-4xl">
+              One vantage point for the{' '}
+              <span className="bg-gradient-to-r from-glow via-blue-bright to-gold bg-clip-text text-transparent">
+                whole of space science.
+              </span>
+            </h2>
+          </Reveal>
+
+          <Reveal preset="fade" index={2}>
+            <div className="mt-8 space-y-5 font-display text-[15px] font-light leading-8 tracking-[0.01em] text-dim md:text-base">
+              <p className="first-letter:float-left first-letter:mr-3 first-letter:mt-1 first-letter:font-display first-letter:text-5xl first-letter:font-bold first-letter:leading-none first-letter:text-glow-soft">
+                The film above is more than a backdrop. That lone observation satellite, drifting
+                over a slowly turning Earth, is the metaphor at the heart of AstroNexusAI — a single
+                point of view from which the sprawling landscape of space research finally becomes
+                legible. Where a satellite gathers scattered signals and resolves them into a clear
+                picture of the planet below, our platform gathers the scattered literature, imagery,
+                and mission data of an entire field and resolves it into answers you can trust.
+              </p>
+              <p>
+                At its core, AstroNexusAI is a research intelligence engine. Upload any scientific
+                paper and it is parsed, split into section-aware passages, embedded with BGE-M3, and
+                indexed into a Qdrant vector store. Ask a question and a hybrid retriever fuses dense
+                semantic search with classical BM25 through reciprocal-rank fusion — then every
+                answer is grounded to its exact source, cited down to the section and page, and scored
+                for reliability before it ever reaches you. Nothing is invented; nothing is unverifiable.
+              </p>
+              <p>
+                Around that engine lives a living knowledge graph. Every author, instrument, dataset,
+                satellite, keyword, and institution becomes a node in a Neo4j graph that grows with
+                each paper you ingest and each question you ask — turning a flat archive into a map you
+                can traverse, and surfacing connections no single document could reveal on its own.
+              </p>
+              <p>
+                Look outward and the same intelligence turns to Earth itself. Satellite imagery flows
+                through DINOv2 features, SAM2 segmentation, and vision-language captioning to detect
+                storms, map coastlines, trace floods, and describe what changed and why. Coordinating
+                all of it, a multi-agent system — router, research, graph, satellite, and general
+                agents orchestrated through LangGraph — decides which specialist should answer, and
+                reaches for live scientific APIs like NASA, arXiv, and SIMBAD exactly when they are
+                needed.
+              </p>
+              <p className="text-light/80">
+                Research. Reason. Visualize. Discover. AstroNexusAI compresses a week of literature
+                review into a single afternoon — so that discovery is limited only by imagination,
+                never by the sheer volume of what there is to read.
+              </p>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+
       {/* Values */}
       <section className="px-6 py-24">
         <div className="mx-auto max-w-6xl">

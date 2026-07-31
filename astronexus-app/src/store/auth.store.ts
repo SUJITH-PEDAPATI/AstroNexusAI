@@ -6,8 +6,9 @@ import { setCookie, deleteCookie } from '@/lib/utils'
 
 interface AuthState {
   user: User | null
+  token: string | null   // ← added: JWT from backend
   hydrated: boolean
-  setUser: (user: User) => void
+  setUser: (user: User, token?: string) => void
   logout: () => void
   setHydrated: () => void
 }
@@ -18,14 +19,15 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
       user: null,
+      token: null,
       hydrated: false,
-      setUser: (user) => {
+      setUser: (user, token) => {
         setCookie(SESSION_COOKIE, user.id)
-        set({ user })
+        set({ user, token: token ?? null })
       },
       logout: () => {
         deleteCookie(SESSION_COOKIE)
-        set({ user: null })
+        set({ user: null, token: null })
       },
       setHydrated: () => set({ hydrated: true }),
     }),

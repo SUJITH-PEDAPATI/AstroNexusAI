@@ -41,15 +41,22 @@ export default function ChatPage() {
     addMessage(id, { id: uid(), role: 'user', content: text, createdAt: Date.now() })
     setBusy(true)
 
-    const result = await chatService.resolve(text)
-    addMessage(id, { id: uid(), role: 'assistant', content: '', createdAt: Date.now() })
-    let acc = ''
-    for await (const tok of chatService.stream(result.answer)) {
-      acc += tok
-      updateLastAssistant(id, { content: acc })
+    try {
+      const result = await chatService.resolve(text)
+      addMessage(id, { id: uid(), role: 'assistant', content: '', createdAt: Date.now() })
+      let acc = ''
+      for await (const tok of chatService.stream(result.answer)) {
+        acc += tok
+        updateLastAssistant(id, { content: acc })
+      }
+      updateLastAssistant(id, { content: acc, grade: result.grade, citations: result.citations })
+    } catch (err: unknown) {
+      // Show the backend error message inside the chat rather than silently failing
+      const msg = err instanceof Error ? err.message : 'Something went wrong. Please try again.'
+      addMessage(id, { id: uid(), role: 'assistant', content: `⚠️ ${msg}`, createdAt: Date.now() })
+    } finally {
+      setBusy(false)
     }
-    updateLastAssistant(id, { content: acc, grade: result.grade, citations: result.citations })
-    setBusy(false)
   }, [activeId, busy, create, addMessage, updateLastAssistant])
 
   const exportChat = () => {

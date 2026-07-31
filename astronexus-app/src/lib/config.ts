@@ -12,7 +12,7 @@ export const apiConfig = {
   endpoints: {
     login: '/auth/login',
     register: '/auth/register',
-    chat: '/chat',
+    chat: '/research',
     conversations: '/conversations',
     ingest: '/ingest',
     papers: '/papers',
