@@ -8,9 +8,9 @@ import { apiConfig } from '@/lib/config'
 import { cn } from '@/lib/cn'
 
 const MODES = [
-  { id: 'detect',  label: 'Detect',  icon: FiEye,      accent: '#34D399' },
-  { id: 'segment', label: 'Segment', icon: FiLayers,   accent: '#6CA2C1' },
-  { id: 'explain', label: 'Explain', icon: FiActivity, accent: '#D4B483' },
+  { id: 'detect',  label: 'Detect',  icon: FiEye,      accent: '#9A9A9A' },
+  { id: 'segment', label: 'Segment', icon: FiLayers,   accent: '#8A8A8A' },
+  { id: 'explain', label: 'Explain', icon: FiActivity, accent: '#A8A49E' },
 ]
 
 interface VisionResult { result: string; mode: string }
@@ -122,7 +122,7 @@ export default function VisionAIPage() {
               {analyzing && (
                 <motion.div
                   className="absolute inset-x-0 h-0.5 bg-glow"
-                  style={{ boxShadow: '0 0 12px #6CA2C1' }}
+                  style={{ boxShadow: '0 0 12px #8A8A8A' }}
                   animate={{ top: ['0%', '100%', '0%'] }}
                   transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
                 />

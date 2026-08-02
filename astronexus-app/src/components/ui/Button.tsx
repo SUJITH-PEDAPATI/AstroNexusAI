@@ -13,15 +13,15 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-blue text-white hover:bg-blue-bright shadow-[0_0_24px_rgba(59,130,246,0.35)]',
-  secondary: 'bg-white/[0.04] border border-white/12 text-light hover:border-glow/50 backdrop-blur-md',
-  ghost: 'text-dim hover:text-light hover:bg-white/5',
-  danger: 'bg-red-500/15 border border-red-500/30 text-red-300 hover:bg-red-500/25',
+  primary:   'anx-button',
+  secondary: 'bg-white/[0.04] border border-white/[0.10] text-light hover:bg-white/[0.07] hover:border-white/20 backdrop-blur-md',
+  ghost:     'text-dim hover:text-light hover:bg-white/5',
+  danger:    'bg-red-500/12 border border-red-500/25 text-red-300 hover:bg-red-500/20',
 }
 const SIZES: Record<Size, string> = {
-  sm: 'px-3.5 py-2 text-xs rounded-lg',
-  md: 'px-5 py-2.5 text-sm rounded-xl',
-  lg: 'px-7 py-3.5 text-sm rounded-full',
+  sm: 'px-3.5 py-2   text-xs rounded-[12px]',
+  md: 'px-5   py-2.5 text-sm rounded-[16px]',
+  lg: 'px-7   py-3.5 text-sm rounded-[16px]',
 }
 
 export const Button = forwardRef<HTMLButtonElement, Props>(function Button(

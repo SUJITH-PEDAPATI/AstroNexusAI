@@ -148,7 +148,7 @@ export default function ResearchPage() {
               <div className="text-xs text-faint">{done ? 'Ingestion complete' : 'Processing…'}</div>
             </div>
             {done && (
-              <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-400">
+              <span className="rounded-full bg-white/[0.06] px-3 py-1 text-xs font-medium text-silver-light">
                 Ready
               </span>
             )}
@@ -163,7 +163,7 @@ export default function ResearchPage() {
                     className={cn(
                       'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs',
                       state === 'done'
-                        ? 'bg-emerald-500/20 text-emerald-400'
+                        ? 'bg-white/[0.08] text-silver-light'
                         : state === 'active'
                           ? 'bg-blue/20 text-glow-soft'
                           : 'bg-white/5 text-faint',
@@ -189,7 +189,7 @@ export default function ResearchPage() {
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="mt-6 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4"
+                className="mt-6 rounded-2xl border border-white/[0.10] bg-white/[0.03] p-4"
               >
                 <div className="grid grid-cols-3 gap-4 text-center">
                   <div>

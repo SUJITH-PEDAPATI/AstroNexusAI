@@ -3,7 +3,7 @@ import { http, ApiError } from './http'
 import { apiConfig } from '@/lib/config'
 import { uid } from '@/lib/utils'
 
-const AVATAR_COLORS = ['#3B82F6', '#6CA2C1', '#0B3D91', '#D4B483', '#60A5FA']
+const AVATAR_COLORS = ['#6E6E6E', '#8A8A8A', '#2C2C2C', '#A8A49E', '#9A9A9A']
 
 function demoUser(email: string, provider: User['provider'] = 'email'): User {
   return {

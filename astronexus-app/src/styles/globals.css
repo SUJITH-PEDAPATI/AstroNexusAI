@@ -2,51 +2,270 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ══════════════════════════════════════════════════════════════════════════
+   AstroNexus AI — Monochrome Design System
+   Every colour in the application resolves from these variables.
+   ══════════════════════════════════════════════════════════════════════════ */
+
 :root {
-  --bg: #07080A;
+  /* ── Surfaces: deep black → graphite ─────────────────────────────────── */
+  --bg-primary:    #050505;
+  --bg-secondary:  #0C0C0C;
+  --surface:       #141414;
+  --surface-2:     #1A1A1A;
+  --panel:         #212121;
+
+  /* ── Graphite scale ──────────────────────────────────────────────────── */
+  --graphite:       #2C2C2C;
+  --graphite-light: #3A3A3A;
+  --cement:         #262626;
+  --charcoal:       #1C1C1C;
+
+  /* ── Buttons ─────────────────────────────────────────────────────────── */
+  --button-bg:     #2E2E2E;
+  --button-hover:  #3D3D3D;
+  --button-active: #1D1D1D;
+  --button-gradient:        linear-gradient(180deg, #3A3A3A 0%, #1D1D1D 100%);
+  --button-gradient-hover:  linear-gradient(180deg, #474747 0%, #262626 100%);
+  --button-gradient-active: linear-gradient(180deg, #242424 0%, #141414 100%);
+
+  /* ── Silver accents (replaces cyan) ──────────────────────────────────── */
+  --silver:        #8A8A8A;
+  --silver-light:  #B4B4B4;
+  --silver-bright: #D8D8D8;
+  --steel:         #6E6E6E;
+  --steel-light:   #9A9A9A;
+  --steel-dark:    #3A3A3A;
+  --warm-white:    #E8E6E3;
+  --warm-gray:     #A8A49E;
+
+  /* ── Text ────────────────────────────────────────────────────────────── */
+  --text-primary:   #F2F2F2;
+  --text-secondary: #9A9A9A;
+  --text-tertiary:  #626262;
+
+  /* ── Glass cards ─────────────────────────────────────────────────────── */
+  --card-bg:        rgba(255, 255, 255, 0.03);
+  --card-bg-hover:  rgba(255, 255, 255, 0.055);
+  --border:         rgba(255, 255, 255, 0.06);
+  --border-hover:   rgba(255, 255, 255, 0.12);
+  --hover:          rgba(255, 255, 255, 0.04);
+
+  /* ── Typography ──────────────────────────────────────────────────────── */
   --font-display: 'Space Grotesk', system-ui, sans-serif;
-  --font-body: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --font-body:    'Inter',         system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', monospace;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html {
-  background: var(--bg);
-  color: #E2E8F0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-body { background: var(--bg); font-family: var(--font-body); overflow-x: hidden; }
+
+body {
+  font-family: var(--font-body);
+  overflow-x: hidden;
+  background: var(--bg-primary);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LAYERED ANIMATED BACKGROUND
+   Three composited gradient layers + noise + vignette.
+   Animates background-position / background-size only → GPU-friendly.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.anx-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: var(--bg-primary);
+  background-image:
+    /* Layer 1 — soft radial, top-left */
+    radial-gradient(
+      ellipse 80% 60% at 15% 10%,
+      rgba(58, 58, 58, 0.55) 0%,
+      rgba(28, 28, 28, 0.28) 40%,
+      transparent 72%
+    ),
+    /* Layer 2 — cement pool, bottom-right */
+    radial-gradient(
+      ellipse 70% 55% at 88% 88%,
+      rgba(44, 44, 44, 0.45) 0%,
+      rgba(20, 20, 20, 0.22) 45%,
+      transparent 75%
+    ),
+    /* Layer 3 — base diagonal wash */
+    linear-gradient(
+      148deg,
+      #050505  0%,
+      #0D0D0D 22%,
+      #171717 42%,
+      #212121 56%,
+      #141414 74%,
+      #070707 100%
+    );
+  background-size: 160% 160%, 140% 140%, 200% 200%;
+  background-position: 0% 0%, 100% 100%, 50% 50%;
+  background-repeat: no-repeat;
+  will-change: background-position, background-size;
+  animation:
+    bgDrift   52s ease-in-out infinite,
+    bgBreathe 44s ease-in-out infinite;
+}
+
+/* Noise + vignette overlay — static, adds depth without cost */
+.anx-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Very soft vignette */
+  box-shadow: inset 0 0 260px 90px rgba(0, 0, 0, 0.55);
+  /* Extremely low-opacity noise */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.028;
+  mix-blend-mode: overlay;
+}
+
+@keyframes bgDrift {
+  0%, 100% { background-position: 0% 0%,    100% 100%, 50% 50%; }
+  50%      { background-position: 100% 50%, 0% 0%,     50% 60%; }
+}
+
+@keyframes bgBreathe {
+  0%, 100% { background-size: 160% 160%, 140% 140%, 200% 200%; }
+  50%      { background-size: 180% 180%, 160% 160%, 210% 210%; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   COMPONENT PRIMITIVES
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Glass card */
+.anx-card {
+  background: var(--card-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+.anx-card:hover {
+  background: var(--card-bg-hover);
+  border-color: var(--border-hover);
+}
+
+/* Primary button — graphite gradient */
+.anx-button {
+  background: var(--button-gradient);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  color: var(--text-primary);
+  transition: background 0.22s ease, border-color 0.22s ease, transform 0.12s ease;
+}
+.anx-button:hover {
+  background: var(--button-gradient-hover);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+.anx-button:active {
+  background: var(--button-gradient-active);
+  transform: translateY(1px);
+}
+
+/* Sidebar gradient */
+.anx-sidebar {
+  background: linear-gradient(
+    180deg,
+    rgba(18, 18, 18, 0.92) 0%,
+    rgba(10, 10, 10, 0.95) 100%
+  );
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Active sidebar item — subtle silver glow */
+.anx-nav-active {
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
 
 .lenis.lenis-smooth { scroll-behavior: auto !important; }
 
-::selection { background: rgba(108,162,193,0.3); color: #fff; }
+/* ══════════════════════════════════════════════════════════════════════════
+   BROWSER CHROME
+   ══════════════════════════════════════════════════════════════════════════ */
+
+::selection { background: rgba(255, 255, 255, 0.16); color: #fff; }
+
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(108,162,193,0.25); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(108,162,193,0.4); }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.18); }
 
-:focus-visible { outline: 2px solid rgba(108,162,193,0.6); outline-offset: 2px; border-radius: 4px; }
+:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.35);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 
-/* Markdown / chat prose */
-.prose-anx { color: #CBD5E1; line-height: 1.7; font-size: 0.9rem; }
-.prose-anx h1, .prose-anx h2, .prose-anx h3 { color: #F5F7FA; font-family: var(--font-display); font-weight: 600; margin: 1em 0 0.5em; }
-.prose-anx p { margin: 0.6em 0; }
+/* ══════════════════════════════════════════════════════════════════════════
+   MARKDOWN / CHAT PROSE — monochrome
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.prose-anx { color: #CFCFCF; line-height: 1.7; font-size: 0.9rem; }
+.prose-anx h1, .prose-anx h2, .prose-anx h3 {
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin: 1em 0 0.5em;
+}
+.prose-anx p  { margin: 0.6em 0; }
 .prose-anx ul, .prose-anx ol { margin: 0.6em 0; padding-left: 1.4em; }
 .prose-anx li { margin: 0.3em 0; }
 .prose-anx ul { list-style: disc; }
 .prose-anx ol { list-style: decimal; }
-.prose-anx strong { color: #F5F7FA; font-weight: 600; }
-.prose-anx a { color: #7DD3FC; text-decoration: underline; }
-.prose-anx code { background: rgba(255,255,255,0.06); padding: 0.15em 0.4em; border-radius: 4px; font-family: var(--font-mono); font-size: 0.85em; color: #A5D8F0; }
-.prose-anx pre { background: #0A0E14; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 1em; overflow-x: auto; margin: 0.8em 0; }
-.prose-anx pre code { background: none; padding: 0; color: #E2E8F0; }
-.prose-anx blockquote { border-left: 3px solid rgba(108,162,193,0.5); padding-left: 1em; color: #94A3B8; margin: 0.8em 0; }
+.prose-anx strong { color: var(--text-primary); font-weight: 600; }
+.prose-anx a { color: var(--silver-bright); text-decoration: underline; text-underline-offset: 2px; }
+.prose-anx code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--silver-bright);
+}
+.prose-anx pre {
+  background: #0A0A0A;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1em;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+.prose-anx pre code { background: none; padding: 0; color: #DADADA; }
+.prose-anx blockquote {
+  border-left: 3px solid rgba(255, 255, 255, 0.18);
+  padding-left: 1em;
+  color: var(--text-secondary);
+  margin: 0.8em 0;
+}
 .prose-anx table { width: 100%; border-collapse: collapse; margin: 0.8em 0; font-size: 0.85em; }
-.prose-anx th, .prose-anx td { border: 1px solid rgba(255,255,255,0.08); padding: 0.5em 0.7em; text-align: left; }
-.prose-anx .katex { color: #E2E8F0; }
+.prose-anx th, .prose-anx td { border: 1px solid var(--border); padding: 0.5em 0.7em; text-align: left; }
+.prose-anx .katex { color: #DADADA; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   REDUCED MOTION
+   ══════════════════════════════════════════════════════════════════════════ */
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  .anx-bg { animation: none; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

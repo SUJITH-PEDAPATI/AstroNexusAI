@@ -20,7 +20,7 @@ import {
 import { FiMessageSquare, FiFileText, FiZap, FiTrendingUp } from 'react-icons/fi'
 
 const ICON_MAP = [FiMessageSquare, FiFileText, FiZap, FiTrendingUp]
-const ACCENT_MAP = ['#6CA2C1', '#3B82F6', '#7DD3FC', '#D4B483']
+const ACCENT_MAP = ['#8A8A8A', '#6E6E6E', '#B4B4B4', '#A8A49E']
 
 export default function DashboardPage() {
   const { user } = useAuth()
@@ -40,10 +40,10 @@ export default function DashboardPage() {
   // Build stat cards from live data or fallbacks
   const statCards = data
     ? [
-        { label: 'Conversations', value: String(data.conversations), delta: 0, icon: FiMessageSquare, accent: '#6CA2C1' },
-        { label: 'Papers Ingested', value: String(data.papers), delta: 0, icon: FiFileText, accent: '#3B82F6' },
-        { label: 'Queries Run', value: String(data.queries), delta: 0, icon: FiZap, accent: '#7DD3FC' },
-        { label: 'Avg Reliability', value: data.avg_reliability?.toFixed(2) ?? '—', delta: 0, icon: FiTrendingUp, accent: '#D4B483' },
+        { label: 'Conversations', value: String(data.conversations), delta: 0, icon: FiMessageSquare, accent: '#8A8A8A' },
+        { label: 'Papers Ingested', value: String(data.papers), delta: 0, icon: FiFileText, accent: '#6E6E6E' },
+        { label: 'Queries Run', value: String(data.queries), delta: 0, icon: FiZap, accent: '#B4B4B4' },
+        { label: 'Avg Reliability', value: data.avg_reliability?.toFixed(2) ?? '—', delta: 0, icon: FiTrendingUp, accent: '#A8A49E' },
       ]
     : FALLBACK_STAT_CARDS
 
@@ -77,7 +77,7 @@ export default function DashboardPage() {
                     <Icon className="h-5 w-5" style={{ color: s.accent ?? ACCENT_MAP[idx] }} />
                   </div>
                   {s.delta > 0 && (
-                    <span className="flex items-center gap-0.5 text-xs font-medium text-emerald-400">
+                    <span className="flex items-center gap-0.5 text-xs font-medium text-silver-light">
                       <FiArrowUpRight className="h-3 w-3" />{s.delta}%
                     </span>
                   )}

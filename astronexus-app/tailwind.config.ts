@@ -1,9 +1,14 @@
 import type { Config } from 'tailwindcss'
 
 /**
- * Design tokens derived directly from the uploaded cinematic hero video:
- * deep space black, NASA blue, steel-cyan atmospheric glow, metallic gray,
- * and soft warm-white — a moody mission-control identity.
+ * AstroNexus AI — Monochrome Design System
+ *
+ * Premium graphite/charcoal palette inspired by OpenAI, Linear, Raycast,
+ * Vercel, and Apple Pro apps. Every value reads from a CSS variable defined
+ * in globals.css, so the whole theme can be retuned in one place.
+ *
+ * Token NAMES are unchanged from the previous palette — every existing
+ * component re-skins automatically with zero code changes.
  */
 export default {
   darkMode: 'class',
@@ -11,35 +16,82 @@ export default {
   theme: {
     extend: {
       colors: {
-        void: '#07080A',
-        space: '#0A0E14',
-        surface: '#10151E',
-        'surface-2': '#161C28',
-        panel: '#1B2331',
-        nasa: { DEFAULT: '#0B3D91', light: '#1D4ED8' },
-        blue: { DEFAULT: '#3B82F6', bright: '#60A5FA', deep: '#2563EB' },
-        glow: { DEFAULT: '#6CA2C1', soft: '#7DD3FC', bright: '#A5D8F0' },
-        steel: { DEFAULT: '#6C6F72', light: '#9CA3AF', dark: '#3A4048' },
-        gold: { DEFAULT: '#E8E1D3', deep: '#D4B483' },
-        light: '#F5F7FA',
-        dim: '#94A3B8',
-        faint: '#5B6675',
+        // ── Surfaces (deep black → graphite) ──
+        void:        'var(--bg-primary)',      // #050505
+        space:       'var(--bg-secondary)',    // #0C0C0C
+        surface:     'var(--surface)',         // #141414
+        'surface-2': 'var(--surface-2)',       // #1A1A1A
+        panel:       'var(--panel)',           // #212121
+
+        // ── Interactive (graphite, was NASA blue) ──
+        nasa: {
+          DEFAULT: 'var(--graphite)',          // #2C2C2C
+          light:   'var(--graphite-light)',    // #3A3A3A
+        },
+        blue: {
+          DEFAULT: 'var(--button-bg)',         // #2E2E2E — primary buttons
+          bright:  'var(--button-hover)',      // #3D3D3D
+          deep:    'var(--button-active)',     // #1D1D1D
+        },
+
+        // ── Accents (silver, was steel-cyan) ──
+        glow: {
+          DEFAULT: 'var(--silver)',            // #8A8A8A
+          soft:    'var(--silver-light)',      // #B4B4B4
+          bright:  'var(--silver-bright)',     // #D8D8D8
+        },
+        steel: {
+          DEFAULT: 'var(--steel)',             // #6E6E6E
+          light:   'var(--steel-light)',       // #9A9A9A
+          dark:    'var(--steel-dark)',        // #3A3A3A
+        },
+        gold: {
+          DEFAULT: 'var(--warm-white)',        // #E8E6E3
+          deep:    'var(--warm-gray)',         // #A8A49E
+        },
+
+        // ── Silver text utilities ──
+        silver: {
+          DEFAULT: 'var(--silver)',
+          light:   'var(--silver-light)',
+          bright:  'var(--silver-bright)',
+        },
+
+        // ── Text ──
+        light: 'var(--text-primary)',          // #F2F2F2
+        dim:   'var(--text-secondary)',        // #9A9A9A
+        faint: 'var(--text-tertiary)',         // #626262
       },
       fontFamily: {
         display: ['var(--font-display)', 'system-ui', 'sans-serif'],
-        body: ['var(--font-body)', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-mono)', 'monospace'],
+        body:    ['var(--font-body)',    'system-ui', 'sans-serif'],
+        mono:    ['var(--font-mono)',    'monospace'],
+      },
+      borderRadius: {
+        card:   '16px',
+        button: '16px',
       },
       animation: {
-        'glow-pulse': 'glowPulse 4s ease-in-out infinite',
+        'glow-pulse': 'glowPulse 6s ease-in-out infinite',
         'float-slow': 'floatSlow 8s ease-in-out infinite',
-        shimmer: 'shimmer 2.5s linear infinite',
-        'spin-slow': 'spin 24s linear infinite',
+        shimmer:      'shimmer 2.5s linear infinite',
+        'spin-slow':  'spin 24s linear infinite',
+        'bg-drift':   'bgDrift 52s ease-in-out infinite',
+        'bg-breathe': 'bgBreathe 44s ease-in-out infinite',
       },
       keyframes: {
-        glowPulse: { '0%,100%': { opacity: '0.35' }, '50%': { opacity: '0.75' } },
+        glowPulse: { '0%,100%': { opacity: '0.25' }, '50%': { opacity: '0.5' } },
         floatSlow: { '0%,100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-10px)' } },
-        shimmer: { '0%': { backgroundPosition: '-200% 0' }, '100%': { backgroundPosition: '200% 0' } },
+        shimmer:   { '0%': { backgroundPosition: '-200% 0' }, '100%': { backgroundPosition: '200% 0' } },
+        // Extremely slow background motion — position + size only, never rotation
+        bgDrift: {
+          '0%,100%': { backgroundPosition: '0% 0%,   100% 100%, 50% 50%' },
+          '50%':     { backgroundPosition: '100% 50%, 0% 0%,     50% 60%' },
+        },
+        bgBreathe: {
+          '0%,100%': { backgroundSize: '160% 160%, 140% 140%, 200% 200%', opacity: '1' },
+          '50%':     { backgroundSize: '180% 180%, 160% 160%, 210% 210%', opacity: '0.92' },
+        },
       },
     },
   },

@@ -10,9 +10,9 @@ import { apiConfig } from '@/lib/config'
 import type { Paper } from '@/types'
 
 const STATUS: Record<Paper['status'], string> = {
-  ready: 'bg-emerald-500/15 text-emerald-400',
-  processing: 'bg-blue/15 text-glow-soft',
-  failed: 'bg-red-500/15 text-red-400',
+  ready: 'bg-white/[0.06] text-silver-light',
+  processing: 'bg-white/[0.05] text-silver',
+  failed: 'bg-red-500/12 text-red-300',
 }
 
 export default function PapersPage() {

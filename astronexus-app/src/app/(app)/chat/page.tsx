@@ -4,6 +4,8 @@ import { FiSend, FiPaperclip, FiDownload, FiX } from 'react-icons/fi'
 import { TbSparkles } from 'react-icons/tb'
 import { ConversationList } from '@/features/chat/ConversationList'
 import { MessageBubble } from '@/features/chat/MessageBubble'
+import { VoiceButton } from '@/features/chat/VoiceButton'
+import { AstroThinkingCore } from '@/components/chat/AstroThinkingCore'
 import { useChatStore } from '@/store/chat.store'
 import { useAuth } from '@/hooks/useAuth'
 import { chatService } from '@/services/chat.service'
@@ -20,6 +22,9 @@ export default function ChatPage() {
   const { conversations, activeId, create, setActive, addMessage, updateLastAssistant } = useChatStore()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [resolving, setResolving] = useState(false)
+  const [searchLabel, setSearchLabel] = useState<string>('')
+  const [webSources, setWebSources] = useState<import('@/services/chat.service').WebSource[]>([])
   const [files, setFiles] = useState<string[]>([])
   const endRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -42,7 +47,11 @@ export default function ChatPage() {
     setBusy(true)
 
     try {
+      setResolving(true)
       const result = await chatService.resolve(text)
+      setResolving(false)
+      setSearchLabel(result.search_label ?? '')
+      setWebSources(result.web_sources ?? [])
       addMessage(id, { id: uid(), role: 'assistant', content: '', createdAt: Date.now() })
       let acc = ''
       for await (const tok of chatService.stream(result.answer)) {
@@ -51,6 +60,7 @@ export default function ChatPage() {
       }
       updateLastAssistant(id, { content: acc, grade: result.grade, citations: result.citations })
     } catch (err: unknown) {
+      setResolving(false)
       // Show the backend error message inside the chat rather than silently failing
       const msg = err instanceof Error ? err.message : 'Something went wrong. Please try again.'
       addMessage(id, { id: uid(), role: 'assistant', content: `⚠️ ${msg}`, createdAt: Date.now() })
@@ -100,9 +110,12 @@ export default function ChatPage() {
           ) : (
             <div className="mx-auto max-w-3xl space-y-6">
               {active.messages.map((m, i) => (
-                <MessageBubble key={m.id} msg={m} userName={user?.name ?? 'You'} userColor={user?.avatarColor ?? '#3B82F6'}
-                  streaming={busy && i === active.messages.length - 1 && m.role === 'assistant' && !m.grade} />
+                <MessageBubble key={m.id} msg={m} userName={user?.name ?? 'You'} userColor={user?.avatarColor ?? '#6E6E6E'}
+                  streaming={busy && !resolving && i === active.messages.length - 1 && m.role === 'assistant' && !m.grade}
+                  searchLabel={i === active.messages.length - 1 && m.role === 'assistant' ? searchLabel : undefined}
+                  webSources={i === active.messages.length - 1 && m.role === 'assistant' ? webSources : undefined} />
               ))}
+              <AstroThinkingCore active={resolving} />
               <div ref={endRef} />
             </div>
           )}
@@ -128,6 +141,17 @@ export default function ChatPage() {
               <textarea value={input} onChange={(e) => setInput(e.target.value)} rows={1} placeholder="Ask anything about space science…"
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input) } }}
                 className="max-h-32 flex-1 resize-none bg-transparent py-2 text-sm text-light outline-none placeholder:text-faint" />
+              <VoiceButton
+                disabled={busy}
+                onTranscript={(text) => setInput(text)}
+                onAnswer={(answer, grade) => {
+                  // Ensure a conversation exists
+                  let id = activeId
+                  if (!id) id = create()
+                  // Add the assistant bubble directly from the voice response
+                  addMessage(id, { id: uid(), role: 'assistant', content: answer, grade, createdAt: Date.now() })
+                }}
+              />
               <button onClick={() => send(input)} disabled={!input.trim() || busy}
                 className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue text-white transition-colors hover:bg-blue-bright disabled:opacity-40" aria-label="Send">
                 <FiSend className="h-4 w-4" />

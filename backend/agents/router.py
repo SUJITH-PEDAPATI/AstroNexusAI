@@ -106,7 +106,7 @@ def _store_keywords(query: str, state: AgentState, route: str) -> list[str]:
         return []
 
 
-def classify_query(query: str, state: Optional[AgentState] = None) -> str:
+def legacy_classify_query(query: str, state: Optional[AgentState] = None) -> str:
     state = state or {}
     forced = _resource_guard(query, state)
     if forced: return forced
@@ -116,7 +116,7 @@ def classify_query(query: str, state: Optional[AgentState] = None) -> str:
     return _tier_route(query, state)
 
 
-def router_node(state: AgentState) -> AgentState:
+def legacy_router_node(state: AgentState) -> AgentState:
     query      = state.get("query", "")
     audio_path = state.get("audio_path")
 
@@ -144,5 +144,118 @@ def router_node(state: AgentState) -> AgentState:
     }
 
 
-def route_decision(state: AgentState) -> str:
+def legacy_route_decision(state: AgentState) -> str:
     return state.get("query_type", "general")
+
+# ==============================================================================
+# NEW ROUTER CODE (Merged from Downloads)
+# ==============================================================================
+
+"""
+AstroNexus AI — Query Router
+
+Classifies the user query and routes it to the correct agent.
+
+Routing rules:
+    image / satellite / land / terrain / flood → SatelliteAgent
+    author / paper / cite / model / dataset    → GraphAgent
+    how / what / explain / find / summarise    → ResearchAgent
+    voice keyword detection                    → VoiceAgent
+    default                                    → ResearchAgent
+"""
+
+
+import logging
+import re
+
+from backend.agents.state import AgentState
+from backend.services.query_router import classify, RouteDecision
+
+logger = logging.getLogger(__name__)
+
+# ── Keyword patterns ───────────────────────────────────────────────────────────
+_SATELLITE_KEYWORDS = re.compile(
+    r"\b(satellite|image|pixel|land\s*use|terrain|flood|segmentation|"
+    r"ndvi|spectral|remote\s*sensing|aerial|geospatial|dinov2|sam2)\b",
+    re.IGNORECASE,
+)
+
+_GRAPH_KEYWORDS = re.compile(
+    r"\b(author|who\s*wrote|citation|cite|related\s*paper|"
+    r"knowledge\s*graph|entity|neo4j|relationship|graph)\b",
+    re.IGNORECASE,
+)
+
+_VOICE_KEYWORDS = re.compile(
+    r"\b(voice|speak|listen|audio|transcribe|record|say|tts|whisper)\b",
+    re.IGNORECASE,
+)
+
+
+def classify_query(query: str, has_paper: bool = False) -> str:
+    """
+    Classify query into one of:
+        research | satellite | graph | voice | web_search | hybrid
+
+    Args:
+        query:     User query string
+        has_paper: Whether the user has a paper loaded in this session
+
+    Returns:
+        Route string consumed by route_decision()
+    """
+    # Check existing domain-specific routes first (unchanged)
+    if _VOICE_KEYWORDS.search(query):
+        return "voice"
+    if _SATELLITE_KEYWORDS.search(query):
+        return "satellite"
+    if _GRAPH_KEYWORDS.search(query):
+        return "graph"
+
+    # New: hybrid query router for web_search / hybrid routes
+    decision: RouteDecision = classify(query, has_paper=has_paper)
+    if decision.route in ("web_search", "hybrid"):
+        logger.info(
+            f"[Router] Web route: {decision.route} "
+            f"(conf={decision.confidence:.2f}) — {decision.reason}"
+        )
+        return decision.route
+
+    return "research"
+
+
+def router_node(state: AgentState) -> AgentState:
+    """
+    LangGraph node: classify query and set state["query_type"].
+    This node runs first in every pipeline invocation.
+    """
+    query      = state.get("query", "")
+    audio_path = state.get("audio_path")
+
+    # If audio provided → transcribe first
+    if audio_path and not query:
+        try:
+            from backend.voice.whisper_service import WhisperService
+            result = WhisperService().transcribe(audio_path)
+            query  = result["text"]
+            logger.info(f"[Router] Transcribed query: {query}")
+        except Exception as e:
+            logger.error(f"[Router] Transcription failed: {e}")
+            return {**state, "error": f"Transcription failed: {e}"}
+
+    has_paper  = state.get("paper_loaded", False) or bool(
+        (state.get("metadata") or {}).get("paper_id")
+    )
+    query_type = classify_query(query, has_paper=has_paper)
+    logger.info(f"[Router] Query='{query[:60]}...'  type={query_type}")
+
+    return {**state, "query": query, "query_type": query_type}
+
+
+def route_decision(state: AgentState) -> str:
+    """
+    LangGraph conditional edge function.
+    Returns the name of the next node based on query_type.
+    """
+    return state.get("query_type", "research")
+

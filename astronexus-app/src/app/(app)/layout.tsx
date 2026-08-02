@@ -9,7 +9,7 @@ import { AtmosphereGlow } from '@/components/background/AtmosphereGlow'
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
     <AuthGate>
-      <div className="relative flex h-screen overflow-hidden bg-void">
+      <div className="relative flex h-screen overflow-hidden">
         <AtmosphereGlow />
         <AppSidebar />
         <div className="relative z-10 flex min-w-0 flex-1 flex-col">

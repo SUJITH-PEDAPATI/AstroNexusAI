@@ -5,10 +5,10 @@ import type { StatCard } from '@/types'
 // The dashboard page replaces these with live data when the API responds.
 
 export const FALLBACK_STAT_CARDS: StatCard[] = [
-  { label: 'Conversations', value: '—', delta: 0, icon: FiMessageSquare, accent: '#6CA2C1' },
-  { label: 'Papers Ingested', value: '—', delta: 0, icon: FiFileText, accent: '#3B82F6' },
-  { label: 'Queries Run', value: '—', delta: 0, icon: FiZap, accent: '#7DD3FC' },
-  { label: 'Avg Reliability', value: '—', delta: 0, icon: FiTrendingUp, accent: '#D4B483' },
+  { label: 'Conversations', value: '—', delta: 0, icon: FiMessageSquare, accent: '#8A8A8A' },
+  { label: 'Papers Ingested', value: '—', delta: 0, icon: FiFileText, accent: '#6E6E6E' },
+  { label: 'Queries Run', value: '—', delta: 0, icon: FiZap, accent: '#B4B4B4' },
+  { label: 'Avg Reliability', value: '—', delta: 0, icon: FiTrendingUp, accent: '#A8A49E' },
 ]
 
 export const FALLBACK_USAGE_TREND = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]

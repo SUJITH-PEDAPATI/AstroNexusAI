@@ -11,7 +11,7 @@ const GraphScene = dynamic(() => import('@/features/knowledge-graph/GraphScene')
 
 const TYPES = [...new Set(GRAPH_NODES.map((n) => n.type))]
 const TYPE_COLOR: Record<string, string> = {
-  Paper: '#6CA2C1', Author: '#34D399', Keyword: '#7DD3FC', Domain: '#E8E1D3', Institution: '#A78BFA', Satellite: '#60A5FA',
+  Paper: '#8A8A8A', Author: '#9A9A9A', Keyword: '#B4B4B4', Domain: '#D8D8D8', Institution: '#7E7E7E', Satellite: '#9A9A9A',
 }
 
 export default function KnowledgeGraphPage() {

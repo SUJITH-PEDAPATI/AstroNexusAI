@@ -8,7 +8,7 @@ terminal CLI (python -m backend.tests.chat) calls.
 
 Start the server from your project root:
 
-    uvicorn backend.api.main:app --reload --port 8000
+    uvicorn backend.api.server:app --reload --port 8000
 
 Then set in astronexus-app/.env.local:
 
@@ -166,32 +166,171 @@ async def chat(req: ChatRequest):
     )
 
 
-# ── /dashboard/stats ────────────────────────────────────────────────────────────
 
-@app.get("/dashboard/stats")
-async def dashboard_stats():
-    """Mock stats endpoint for the frontend dashboard."""
-    return {
-        "conversations": 42,
-        "papers": 12,
-        "queries": 156,
-        "avg_reliability": 0.92,
-        "usage_trend": [5, 10, 15, 12, 22, 18, 30, 25, 40, 35, 50, 42],
-        "query_bars": [12, 15, 8, 22, 30, 25, 44],
-        "recent_activity": [
-            {"action": "Queried", "target": "Origins Space Telescope", "time": "2m ago"},
-            {"action": "Ingested", "target": "Exoplanet Atmospheres.pdf", "time": "1h ago"},
-            {"action": "Queried", "target": "SAR Flood Detection", "time": "3h ago"}
-        ],
-        "bookmarks": ["James Webb Space Telescope", "Mars Rover Analysis"]
-    }
+# ── Imports for file handling (voice endpoints need these) ────────────────────
+
+import shutil
+import tempfile
+import time as _time
+import uuid as _uuid
+from pathlib import Path
+
+from fastapi import File, Form, UploadFile
+
+_AUDIO_DIR = Path(tempfile.gettempdir()) / "astronexus_audio"
+_AUDIO_DIR.mkdir(exist_ok=True)
+
+
+# ── Voice response models ─────────────────────────────────────────────────────
+
+class VoiceResponse(BaseModel):
+    transcript:  str
+    answer:      str
+    audio_url:   str
+    confidence:  str
+    is_reliable: bool
+
+class TranscribeResponse(BaseModel):
+    success:         bool
+    transcript:      str
+    language:        str
+    duration_sec:    float
+    processing_time: float
+    model:           str
+    device:          str
+    audio_format:    str
+    audio_size_kb:   float
+    segments:        list = []
+    error:           str  = ""
+
+
+# ── POST /voice/chat ──────────────────────────────────────────────────────────
+
+@app.post("/voice/chat", response_model=VoiceResponse)
+async def voice_chat(
+    audio:    UploadFile    = File(...),
+    paper_id: str | None    = Form(None),
+):
+    """
+    Voice note → Whisper STT → orchestrator → edge TTS → MP3.
+    Identical pipeline to main.py /voice/chat.
+    """
+    audio_path = _AUDIO_DIR / f"{_uuid.uuid4()}_{audio.filename or 'recording.webm'}"
+
+    # Save upload
+    with open(audio_path, "wb") as f:
+        shutil.copyfileobj(audio.file, f)
+
+    # Step 1: Whisper STT
+    try:
+        from backend.voice.whisper_service import WhisperService
+        stt    = WhisperService().transcribe(audio_path)
+        transcript = stt["text"]
+        logger.info(f"[/voice/chat] transcript: {transcript[:80]}")
+    except Exception as e:
+        audio_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"STT failed: {e}")
+
+    # Step 2: Keyword extraction → Neo4j (non-fatal)
+    try:
+        from backend.agents.tier_classifier     import extract_keywords
+        from backend.agents.query_keyword_store import store_query_keywords
+        kw = extract_keywords(transcript)
+        if kw:
+            store_query_keywords(query=transcript, keywords=kw, query_type="voice")
+    except Exception as e:
+        logger.warning(f"[/voice/chat] keyword storage skipped: {e}")
+
+    # Step 3: Research pipeline
+    try:
+        from backend.agents.orchestrator import run
+        result = run(
+            query=        transcript,
+            paper_loaded= bool(paper_id),
+            paper_id=     paper_id,
+        )
+        answer = result.get("final_answer") or "No answer generated."
+        meta   = result.get("metadata") or {}
+        evl    = meta.get("evaluation") or {}
+    except Exception as e:
+        audio_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Research failed: {e}")
+
+    # Step 4: TTS → MP3 (non-fatal)
+    audio_url = ""
+    try:
+        import edge_tts
+        out_mp3 = _AUDIO_DIR / f"response_{_uuid.uuid4()}.mp3"
+        voice   = os.environ.get("TTS_VOICE", "en-US-AriaNeural")
+        await edge_tts.Communicate(answer[:800], voice).save(str(out_mp3))
+        audio_url = f"/audio/{out_mp3.name}"
+    except Exception as e:
+        logger.warning(f"[/voice/chat] TTS skipped: {e}")
+
+    audio_path.unlink(missing_ok=True)
+
+    return VoiceResponse(
+        transcript=  transcript,
+        answer=      answer,
+        audio_url=   audio_url,
+        confidence=  evl.get("confidence",  "LOW"),
+        is_reliable= evl.get("is_reliable", False),
+    )
+
+
+# ── GET /audio/{filename} ─────────────────────────────────────────────────────
+
+@app.get("/audio/{filename}")
+async def serve_audio(filename: str):
+    from fastapi.responses import FileResponse
+    p = _AUDIO_DIR / filename
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    return FileResponse(str(p), media_type="audio/mpeg")
+
+
+# ── POST /voice/transcribe — isolated STT test ───────────────────────────────
+
+@app.post("/voice/transcribe", response_model=TranscribeResponse)
+async def voice_transcribe(audio: UploadFile = File(...)):
+    """Isolated Whisper STT test — no other services called."""
+    audio_path = _AUDIO_DIR / f"test_{_uuid.uuid4()}_{audio.filename or 'rec.webm'}"
+    audio_fmt  = Path(audio.filename or "rec.webm").suffix.lstrip(".").upper() or "WEBM"
+
+    with open(audio_path, "wb") as f:
+        shutil.copyfileobj(audio.file, f)
+    size_kb = audio_path.stat().st_size / 1024
+
+    t0 = _time.time()
+    try:
+        from backend.voice.whisper_service import WhisperService, WHISPER_MODEL
+        result   = WhisperService().transcribe(audio_path)
+        elapsed  = _time.time() - t0
+        audio_path.unlink(missing_ok=True)
+        return TranscribeResponse(
+            success=True,
+            transcript=      result["text"],
+            language=        result.get("language", ""),
+            duration_sec=    round(result.get("duration", 0.0), 2),
+            processing_time= round(elapsed, 2),
+            model=           result.get("model", WHISPER_MODEL),
+            device=          result.get("device", "cpu"),
+            audio_format=    audio_fmt,
+            audio_size_kb=   round(size_kb, 1),
+            segments=        result.get("segments", []),
+        )
+    except Exception as e:
+        elapsed = _time.time() - t0
+        audio_path.unlink(missing_ok=True)
+        return TranscribeResponse(
+            success=False, transcript="", language="", duration_sec=0,
+            processing_time=round(elapsed, 2), model="", device="",
+            audio_format=audio_fmt, audio_size_kb=round(size_kb, 1),
+            error=str(e),
+        )
+
 
 # ── /health ───────────────────────────────────────────────────────────────────
-
-@app.get("/")
-async def root():
-    """Root endpoint for the API."""
-    return {"message": "AstroNexus AI API is running. Visit /docs for documentation."}
 
 @app.get("/health")
 async def health():

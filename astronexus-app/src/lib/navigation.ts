@@ -1,5 +1,5 @@
 import {
-  FiGrid, FiMessageSquare, FiClock, FiSearch, FiShare2, FiEye, FiFileText, FiUser, FiSettings,
+  FiGrid, FiMessageSquare, FiClock, FiSearch, FiShare2, FiEye, FiFileText, FiUser, FiSettings, FiMic,
 } from 'react-icons/fi'
 import type { NavItem } from '@/types'
 
@@ -15,6 +15,8 @@ export const APP_NAV: NavItem[] = [
 ]
 
 export const APP_NAV_FOOTER: NavItem[] = [
+  { label: 'Voice Test 🧪', href: '/voice-test', icon: FiMic },
+
   { label: 'Profile', href: '/profile', icon: FiUser },
   { label: 'Settings', href: '/settings', icon: FiSettings },
 ]

@@ -21,7 +21,7 @@ export function AppSidebar() {
 
   return (
     <motion.aside animate={{ width: sidebarOpen ? 264 : 76 }} transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-      className="relative z-30 hidden h-screen flex-shrink-0 flex-col border-r border-white/[0.06] bg-space/80 backdrop-blur-xl md:flex">
+      className="anx-sidebar relative z-30 hidden h-screen flex-shrink-0 flex-col border-r border-white/[0.06] md:flex">
       <div className={cn('flex h-16 items-center border-b border-white/[0.06] px-4', sidebarOpen ? 'justify-between' : 'justify-center')}>
         {sidebarOpen ? <Logo /> : <Logo compact />}
         {sidebarOpen && (
@@ -38,9 +38,9 @@ export function AppSidebar() {
           return (
             <Link key={item.href} href={item.href}
               className={cn('group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors',
-                active ? 'bg-blue/15 text-light' : 'text-dim hover:bg-white/5 hover:text-light',
+                active ? 'anx-nav-active text-light' : 'text-dim hover:bg-white/5 hover:text-light',
                 !sidebarOpen && 'justify-center')}>
-              {active && <motion.span layoutId="sidebar-active" className="absolute left-0 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-r bg-glow" />}
+              {active && <motion.span layoutId="sidebar-active" className="absolute left-0 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-r bg-white/60" />}
               <Icon className={cn('h-[18px] w-[18px] flex-shrink-0', active && 'text-glow-soft')} />
               <AnimatePresence>
                 {sidebarOpen && <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="whitespace-nowrap">{item.label}</motion.span>}
@@ -57,7 +57,7 @@ export function AppSidebar() {
           return (
             <Link key={item.href} href={item.href}
               className={cn('flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors',
-                active ? 'bg-blue/15 text-light' : 'text-dim hover:bg-white/5 hover:text-light', !sidebarOpen && 'justify-center')}>
+                active ? 'anx-nav-active text-light' : 'text-dim hover:bg-white/5 hover:text-light', !sidebarOpen && 'justify-center')}>
               <Icon className="h-[18px] w-[18px] flex-shrink-0" />
               {sidebarOpen && <span>{item.label}</span>}
             </Link>

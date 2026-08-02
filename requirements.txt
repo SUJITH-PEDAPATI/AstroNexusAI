@@ -44,3 +44,5 @@ google-genai
 google-generativeai
 sentence-transformers
 rank-bm25
+sounddevice
+soundfile
