@@ -21,7 +21,7 @@ def build_graph():
     from backend.agents.router          import router_node, route_decision
     from backend.agents.research_agent  import research_agent_node
     from backend.agents.satellite_agent import satellite_agent_node
-    from backend.agents.graph_agent     import graph_agent_node
+    from backend.agents.graph_agent_v2  import general_agent_node as graph_agent_node
     from backend.agents.voice_agent     import voice_agent_node
     from backend.agents.general_agent   import general_agent_node
 
@@ -35,8 +35,16 @@ def build_graph():
     graph.set_entry_point("router")
     graph.add_conditional_edges(
         "router", route_decision,
-        {"research":"research","satellite":"satellite",
-         "graph":"graph","voice":"research","general":"general"},
+        {
+            "research":   "research",
+            "satellite":  "satellite",
+            "graph":      "graph",
+            "voice":      "research",
+            "general":    "general",
+            # web_search / hybrid → general until full web agent is ready
+            "web_search": "general",
+            "hybrid":     "general",
+        },
     )
     for node in ["research","satellite","graph","voice","general"]:
         graph.add_edge(node, END)

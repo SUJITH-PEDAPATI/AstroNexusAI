@@ -5,8 +5,10 @@ import { TbSparkles } from 'react-icons/tb'
 import { ConversationList } from '@/features/chat/ConversationList'
 import { MessageBubble } from '@/features/chat/MessageBubble'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { VoiceButton } from '@/features/chat/VoiceButton'
-import { VoicePanel }  from '@/features/chat/VoicePanel'
+import { VoiceButton }    from '@/features/chat/VoiceButton'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+import { VoicePanel }     from '@/features/chat/VoicePanel'
+import { VoiceMicButton } from '@/features/chat/VoiceMicButton'
 import { AstroThinkingCore } from '@/components/chat/AstroThinkingCore'
 import { useChatStore } from '@/store/chat.store'
 import { useAuth } from '@/hooks/useAuth'
@@ -143,28 +145,9 @@ export default function ChatPage() {
               <textarea value={input} onChange={(e) => setInput(e.target.value)} rows={1} placeholder="Ask anything about space science…"
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input) } }}
                 className="max-h-32 flex-1 resize-none bg-transparent py-2 text-sm text-light outline-none placeholder:text-faint" />
-              <VoicePanel
+              <VoiceMicButton
                 disabled={busy}
-                paperId={undefined}
                 onTranscript={(text) => setInput(text)}
-                onAnswer={(answer, grade, citations) => {
-                  let id = activeId
-                  if (!id) id = create()
-                  // Add the user message showing what was spoken
-                  if (input.trim()) {
-                    addMessage(id, { id: uid(), role: 'user', content: input, createdAt: Date.now() })
-                    setInput('')
-                  }
-                  // Add the assistant reply with citations from the voice pipeline
-                  addMessage(id, {
-                    id: uid(),
-                    role: 'assistant',
-                    content: answer,
-                    grade,
-                    citations: citations ?? [],
-                    createdAt: Date.now(),
-                  })
-                }}
               />
               <button onClick={() => send(input)} disabled={!input.trim() || busy}
                 className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue text-white transition-colors hover:bg-blue-bright disabled:opacity-40" aria-label="Send">

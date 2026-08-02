@@ -6,6 +6,7 @@ import type { ChatMessage } from '@/types'
 import type { WebSource } from '@/services/chat.service'
 import { Avatar } from '@/components/ui/Avatar'
 import { Markdown } from './Markdown'
+import { ReadAloudButton } from '@/components/chat/ReadAloudButton'
 
 export function MessageBubble({ msg, userName, userColor, streaming, searchLabel, webSources }: {
   msg: ChatMessage; userName: string; userColor: string; streaming?: boolean
@@ -45,6 +46,10 @@ export function MessageBubble({ msg, userName, userColor, streaming, searchLabel
               </div>
             )}
           </div>
+        )}
+        {/* Read Aloud — assistant messages only, not while streaming */}
+        {!isUser && !streaming && msg.content.trim() && (
+          <ReadAloudButton text={msg.content} msgId={msg.id} />
         )}
       </div>
     </motion.div>
