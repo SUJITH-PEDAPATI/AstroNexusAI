@@ -1,43 +1,38 @@
 """
-AstroNexus AI — Agent State
+AstroNexus AI — Agent State v3.0
 
-Defines the AgentState TypedDict used across LangGraph nodes and agents.
+Added in v3:
+    conversation_history  list of previous turns for multi-turn context
 """
 from __future__ import annotations
 
-from typing import Optional, TypedDict, Any
+from typing import Annotated, Optional
+from typing_extensions import TypedDict
+from langgraph.graph.message import add_messages
 
 
-class AgentState(TypedDict, total=False):
-    """
-    Shared state passed between LangGraph agent nodes.
-    """
-    query:            str
-    query_type:       str                       # "research" | "satellite" | "graph" | "voice"
-    audio_path:       Optional[str]             # input speech file if any
-    image_path:       Optional[str]             # input satellite image if any
+class AgentState(TypedDict):
+    # ── Core ──────────────────────────────────────────────────────────────────
+    messages:     Annotated[list, add_messages]
+    query:        str
+    audio_path:   Optional[str]
 
-    # Multi-turn conversation
-    conversation_history: list[dict[str, Any]] # list of {turn, query, answer, query_type}
-    turn_count:           int                  # current turn number (1-indexed)
+    # ── Routing ───────────────────────────────────────────────────────────────
+    query_type:   Optional[str]
+    metadata:     Optional[dict]
 
-    # Per-run metadata (paper_loaded, paper_id, image_path, evaluation, …)
-    metadata:         dict[str, Any]
+    # ── Agent outputs ─────────────────────────────────────────────────────────
+    rag_context:       Optional[str]
+    graph_context:     Optional[str]
+    satellite_result:  Optional[dict]
+    final_answer:      Optional[str]
+    audio_out:         Optional[str]
 
-    # RAG / Research context
-    retrieved_docs:   list[dict[str, Any]]
-    rag_context:      str
+    # ── Session state ─────────────────────────────────────────────────────────
+    paper_loaded:  Optional[bool]
+    turn_count:    Optional[int]
+    error:         Optional[str]
 
-    # Sub-agent outputs
-    research_answer:  Optional[str]
-    graph_answer:     Optional[str]
-    satellite_result: Optional[dict[str, Any]]
-    voice_audio_path: Optional[str]
-
-    # Final combined response
-    final_answer:     Optional[str]
-    audio_out:        Optional[str]             # output TTS audio path
-    error:            Optional[str]
-
-    # Paper context — must be a declared field so LangGraph doesn't drop it
-    paper_loaded:     bool                      # True if a paper has been ingested
+    # ── Conversation history (NEW in v3) ──────────────────────────────────────
+    conversation_history: Optional[list]
+    # Each entry: {"turn": int, "query": str, "answer": str, "query_type": str}

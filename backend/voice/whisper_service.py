@@ -1,101 +1,221 @@
 """
 AstroNexus AI — Whisper Speech-to-Text Service
 
-Converts audio files (WAV, MP3, M4A, FLAC, OGG) to text using OpenAI Whisper.
+Transcribes audio files to text using OpenAI Whisper.
+Supports WAV (no ffmpeg required), MP3, M4A, OGG, FLAC, WEBM (need ffmpeg).
 
-Primary:  openai-whisper — local PyTorch-based model (tiny / base / small / medium / large)
-Fallback: speech_recognition (Google Speech Recognition API / Offline Sphinx)
+Model: base (good speed/accuracy balance for RTX 4060)
+       small — better accuracy, slightly slower
+       medium — best quality, more VRAM
 
-Install:
-    pip install openai-whisper torch soundfile
+Install: pip install openai-whisper soundfile numpy
+
+GPU: automatic if CUDA available
+CPU: fallback, expect ~2-4x realtime
+
+──────────────────────────────────────────────────────────────────────────────
+WinError 2 — root cause and fix
+──────────────────────────────────────────────────────────────────────────────
+openai-whisper decodes audio via ffmpeg subprocess:
+    subprocess.run(["ffmpeg", "-i", path, ...])
+
+On Windows, if ffmpeg.exe is NOT on PATH, Python raises:
+    FileNotFoundError: [WinError 2] The system cannot find the file specified
+
+The "file" Windows cannot find is ffmpeg.exe, NOT the audio file.
+
+This service fixes the problem two ways:
+
+1. For WAV files (the common case in this pipeline): loads audio with
+   soundfile + numpy directly — NO ffmpeg subprocess at all.
+
+2. For other formats: checks ffmpeg availability FIRST and raises a clear
+   error if missing, rather than letting the subprocess crash cryptically.
+
+To install ffmpeg (only needed for non-WAV formats):
+    Windows: https://www.gyan.dev/ffmpeg/builds/  → add bin/ folder to PATH
+    Linux:   sudo apt install ffmpeg
+    Mac:     brew install ffmpeg
+──────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
+import traceback
 import time
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "base"
+WHISPER_MODEL  = "base"
+SAMPLE_RATE    = 16_000   # Whisper always works at 16 kHz
 
-_whisper_model  = None
-_whisper_device = None
+# WAV is loaded without ffmpeg. All other formats need ffmpeg.
+WAV_ONLY_EXTS  = {".wav"}
+FFMPEG_EXTS    = {".mp3", ".m4a", ".ogg", ".flac", ".webm", ".mp4", ".mkv"}
+SUPPORTED_EXTS = WAV_ONLY_EXTS | FFMPEG_EXTS
+
+_model:  Optional[object] = None
+_device: Optional[str]    = None
 
 
-def _load_audio_to_numpy(audio_path: Path) -> np.ndarray:
+# ── FFmpeg probe ──────────────────────────────────────────────────────────────
+
+def _ffmpeg_path() -> str | None:
+    """Return the absolute path of ffmpeg if available on PATH, else None."""
+    local_ffmpeg = Path(__file__).resolve().parents[2] / "bin" / "ffmpeg" / "bin" / "ffmpeg.exe"
+    if local_ffmpeg.exists():
+        return str(local_ffmpeg)
+    return shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+
+
+def _require_ffmpeg(suffix: str) -> None:
     """
-    Load an audio file into a 16kHz float32 mono NumPy array.
-    Bypasses ffmpeg dependency required by whisper.load_audio().
+    Raise a clear RuntimeError if ffmpeg is needed but missing.
+    Called before attempting to decode non-WAV formats.
     """
-    # 1. Try soundfile (handles WAV, FLAC, OGG, etc.)
+    path = _ffmpeg_path()
+    if path:
+        logger.info(f"[Whisper] ffmpeg found: {path}")
+        return
+    msg = (
+        f"[WinError 2 FIX] Cannot transcribe {suffix!r} files: ffmpeg is not installed "
+        f"or not on PATH.\n"
+        f"The file you want to transcribe exists, but Whisper cannot decode it "
+        f"because it relies on ffmpeg as a subprocess.\n\n"
+        f"To fix:\n"
+        f"  Windows → download from https://www.gyan.dev/ffmpeg/builds/\n"
+        f"            extract the zip, add the bin\\ folder to your PATH\n"
+        f"            restart your terminal and run: ffmpeg -version\n"
+        f"  Linux   → sudo apt install ffmpeg\n"
+        f"  Mac     → brew install ffmpeg\n\n"
+        f"Alternatively, record audio as WAV — WAV files are loaded without "
+        f"ffmpeg and will work immediately."
+    )
+    logger.error(msg)
+    raise RuntimeError(msg)
+
+
+# ── WAV loader (no ffmpeg) ────────────────────────────────────────────────────
+
+def _load_wav_direct(path: Path) -> np.ndarray:
+    """
+    Load a WAV file into a float32 numpy array at 16 kHz WITHOUT ffmpeg.
+
+    Uses soundfile (libsndfile) to read the file, then resamples if needed.
+    This completely bypasses the ffmpeg subprocess that causes WinError 2.
+
+    Args:
+        path: Path to a WAV file that exists on disk
+
+    Returns:
+        float32 numpy array at 16 kHz, values in [-1, 1]
+
+    Raises:
+        FileNotFoundError if path does not exist
+        RuntimeError if soundfile cannot read the file
+    """
+    # Verify existence here so the error message is clear
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Audio file not found: {path.resolve()}\n"
+            f"  cwd={os.getcwd()}\n"
+            f"  path.parent exists: {path.parent.exists()}"
+        )
+
+    file_bytes = path.stat().st_size
+    logger.info(
+        f"[Whisper/WAV] Loading: {path.resolve()}  "
+        f"size={file_bytes} bytes  exists=True"
+    )
+
+    if file_bytes < 44:
+        raise RuntimeError(
+            f"WAV file is too small ({file_bytes} bytes). "
+            "The recording may be empty or corrupt."
+        )
+
     try:
         import soundfile as sf
-        data, samplerate = sf.read(str(audio_path), dtype="float32")
-        if data.ndim > 1:
-            data = data.mean(axis=1)  # convert stereo → mono
+    except ImportError as e:
+        raise ImportError(
+            "soundfile is required for WAV loading without ffmpeg. "
+            "Run: pip install soundfile"
+        ) from e
 
-        if samplerate != 16000:
-            try:
-                import scipy.signal
-                num_samples = int(len(data) * 16000 / samplerate)
-                data = scipy.signal.resample(data, num_samples).astype(np.float32)
-            except ImportError:
-                # Basic linear interpolation fallback if scipy isn't installed
-                old_indices = np.arange(len(data))
-                new_indices = np.linspace(0, len(data) - 1, int(len(data) * 16000 / samplerate))
-                data = np.interp(new_indices, old_indices, data).astype(np.float32)
-        return data
-    except (ImportError, Exception) as e:
-        logger.debug(f"[Whisper] soundfile load failed: {e}")
-
-    # 2. Try standard library wave module for WAV files
     try:
-        import wave
-        with wave.open(str(audio_path), "rb") as wf:
-            n_channels = wf.getnchannels()
-            sampwidth  = wf.getsampwidth()
-            framerate  = wf.getframerate()
-            n_frames   = wf.getnframes()
-            raw_bytes  = wf.readframes(n_frames)
-
-        if sampwidth == 2:
-            data = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        elif sampwidth == 4:
-            data = np.frombuffer(raw_bytes, dtype=np.int32).astype(np.float32) / 2147483648.0
-        elif sampwidth == 1:
-            data = (np.frombuffer(raw_bytes, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-        else:
-            raise ValueError(f"Unsupported sample width: {sampwidth}")
-
-        if n_channels > 1:
-            data = data.reshape(-1, n_channels).mean(axis=1)
-
-        if framerate != 16000:
-            old_indices = np.arange(len(data))
-            new_indices = np.linspace(0, len(data) - 1, int(len(data) * 16000 / framerate))
-            data = np.interp(new_indices, old_indices, data).astype(np.float32)
-
-        return data
+        audio, file_sr = sf.read(str(path), dtype="float32", always_2d=False)
     except Exception as e:
-        logger.debug(f"[Whisper] wave module load failed: {e}")
+        raise RuntimeError(
+            f"soundfile could not read {path.name}: {e}\n"
+            f"The file may be corrupt or in an unsupported sub-format."
+        ) from e
 
-    # 3. Fallback to whisper.load_audio (requires ffmpeg)
-    import whisper
-    return whisper.load_audio(str(audio_path))
+    logger.info(
+        f"[Whisper/WAV] Read: shape={audio.shape} "
+        f"sr={file_sr} Hz  duration={len(audio)/file_sr:.2f}s"
+    )
 
+    # Convert stereo → mono
+    if audio.ndim == 2:
+        audio = audio.mean(axis=1)
+        logger.info("[Whisper/WAV] Converted stereo → mono")
+
+    # Resample to 16 kHz if needed
+    if file_sr != SAMPLE_RATE:
+        logger.info(f"[Whisper/WAV] Resampling {file_sr} → {SAMPLE_RATE} Hz")
+        try:
+            # scipy gives better quality than linear interpolation
+            from scipy.signal import resample_poly
+            from math import gcd
+            g   = gcd(SAMPLE_RATE, file_sr)
+            up  = SAMPLE_RATE // g
+            down = file_sr    // g
+            audio = resample_poly(audio, up, down).astype(np.float32)
+        except ImportError:
+            # Fallback: numpy linear interpolation
+            ratio  = SAMPLE_RATE / file_sr
+            n_out  = int(len(audio) * ratio)
+            audio  = np.interp(
+                np.linspace(0, len(audio) - 1, n_out),
+                np.arange(len(audio)),
+                audio,
+            ).astype(np.float32)
+        logger.info(f"[Whisper/WAV] Resampled → {len(audio)} samples")
+
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    logger.info(
+        f"[Whisper/WAV] Ready: samples={len(audio)} "
+        f"rms={rms:.4f} max={float(np.abs(audio).max()):.4f}"
+    )
+
+    if rms < 1e-5:
+        logger.warning(
+            "[Whisper/WAV] Audio RMS is near zero — recording may be silent. "
+            "Check that the microphone was not muted."
+        )
+
+    return audio
+
+
+# ── WhisperService ────────────────────────────────────────────────────────────
 
 class WhisperService:
     """
-    Singleton-backed Whisper speech recognition service.
+    Singleton Whisper transcription service.
+
+    For WAV input: loads audio via soundfile (no ffmpeg required).
+    For other formats: checks ffmpeg first, then lets whisper decode.
 
     Usage:
         svc    = WhisperService()
-        result = svc.transcribe("path/to/audio.wav")
+        result = svc.transcribe("recording.wav")
         print(result["text"])
     """
 
@@ -105,186 +225,195 @@ class WhisperService:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._loaded = False
-            cls._instance._backend = None
-            cls._instance._model_name = DEFAULT_MODEL
         return cls._instance
 
     # ── Model loading ──────────────────────────────────────────────────────────
 
-    def _load_whisper(self) -> bool:
-        """Try to load OpenAI Whisper. Returns True on success."""
-        global _whisper_model, _whisper_device
+    def _load(self) -> None:
+        """Lazy-load Whisper model onto GPU or CPU."""
+        if self._loaded:
+            return
+
+        global _model, _device
+
+        logger.info("[Whisper] Loading model — pre-flight checks")
+        logger.info(f"  Python cwd: {os.getcwd()}")
+        logger.info(f"  WHISPER_MODEL: {WHISPER_MODEL}")
+        logger.info(f"  ffmpeg on PATH: {_ffmpeg_path() or 'NOT FOUND'}")
 
         try:
             import whisper
-            import torch
+        except ImportError as e:
+            raise ImportError(
+                "openai-whisper is not installed. "
+                "Run: pip install openai-whisper"
+            ) from e
 
-            _whisper_device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(
-                f"[Whisper] Loading model '{self._model_name}' on {_whisper_device.upper()}..."
-            )
-            t0 = time.perf_counter()
+        import torch
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
 
-            _whisper_model = whisper.load_model(self._model_name, device=_whisper_device)
-
-            logger.info(
-                f"[Whisper] Model '{self._model_name}' ready in "
-                f"{(time.perf_counter()-t0)*1000:.0f}ms"
-            )
-            self._backend = "whisper"
-            return True
-
-        except ImportError:
-            logger.warning(
-                "[Whisper] openai-whisper package not installed. "
-                "Install: pip install openai-whisper"
-            )
-            return False
-        except Exception as e:
-            logger.warning(f"[Whisper] Load failed: {e}")
-            return False
-
-    def _load_speech_recognition(self) -> bool:
-        """Try to load SpeechRecognition fallback. Returns True on success."""
-        try:
-            import speech_recognition as sr
-
-            self._recognizer = sr.Recognizer()
-            self._backend = "speech_recognition"
-            logger.info("[Whisper] SpeechRecognition fallback ready")
-            return True
-        except ImportError:
-            logger.warning(
-                "[Whisper] SpeechRecognition not installed. "
-                "Install: pip install SpeechRecognition"
-            )
-            return False
-        except Exception as e:
-            logger.warning(f"[Whisper] SpeechRecognition load failed: {e}")
-            return False
-
-    def _load(self) -> None:
-        if self._loaded:
-            return
-        if not self._load_whisper():
-            if not self._load_speech_recognition():
-                raise RuntimeError(
-                    "No STT backend available.\n"
-                    "Install at least one:\n"
-                    "  pip install openai-whisper   # OpenAI Whisper (recommended)\n"
-                    "  pip install SpeechRecognition # fallback"
-                )
+        logger.info(f"[Whisper] Loading '{WHISPER_MODEL}' on {_device.upper()}...")
+        t0     = time.perf_counter()
+        _model = whisper.load_model(WHISPER_MODEL, device=_device)
+        logger.info(
+            f"[Whisper] Model ready in {(time.perf_counter()-t0)*1000:.0f}ms "
+            f"device={_device}"
+        )
         self._loaded = True
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def transcribe(
-        self,
-        audio_path: str | Path,
-        language:   Optional[str] = None,
-    ) -> dict:
+    def transcribe(self, audio_path: str | Path) -> dict:
         """
         Transcribe an audio file to text.
 
+        WAV files are decoded with soundfile (no ffmpeg needed).
+        Other formats use whisper's internal ffmpeg decoder.
+
         Args:
-            audio_path: Path to audio file (WAV, MP3, M4A, FLAC, OGG, etc.)
-            language:   Optional 2-letter language code (e.g. 'en', 'es'). Autodetected if None.
+            audio_path: Absolute or relative path to the audio file.
 
         Returns:
             {
-                "text":     str,   Full transcribed text
-                "language": str,   Detected or specified language
-                "duration": float, Audio duration in seconds (approx)
-                "model":    str,   Model name used
-                "device":   str,   Device used ('cpu' or 'cuda')
-                "segments": list,  Detailed segment timestamps (Whisper backend only)
+                "text":     str,
+                "language": str,
+                "duration": float,
+                "segments": list,
+                "model":    str,
+                "device":   str,
             }
-        """
-        path = Path(audio_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Audio file not found: {path}")
 
+        Raises:
+            FileNotFoundError  — audio file does not exist
+            ValueError         — unsupported file format
+            RuntimeError       — ffmpeg missing for non-WAV, or Whisper error
+        """
         self._load()
 
-        logger.info(f"[Whisper] Transcribing '{path.name}' via {self._backend}...")
-        t0 = time.perf_counter()
+        path = Path(audio_path).resolve()  # always absolute on Windows
 
-        if self._backend == "whisper":
-            options: dict[str, Any] = {}
-            if language:
-                options["language"] = language
+        # ── Pre-flight logging ──────────────────────────────────────────────────
+        logger.info("=" * 60)
+        logger.info("[Whisper] Transcription request")
+        logger.info(f"  input path (raw):     {audio_path!r}")
+        logger.info(f"  resolved (absolute):  {path}")
+        logger.info(f"  file exists:          {path.exists()}")
+        logger.info(f"  file size:            {path.stat().st_size if path.exists() else 'N/A'} bytes")
+        logger.info(f"  parent dir exists:    {path.parent.exists()}")
+        logger.info(f"  cwd:                  {os.getcwd()}")
+        logger.info(f"  ffmpeg:               {_ffmpeg_path() or 'NOT FOUND'}")
+        logger.info("=" * 60)
 
-            audio_input = _load_audio_to_numpy(path)
-            result = _whisper_model.transcribe(audio_input, **options)
-            elapsed = time.perf_counter() - t0
-
-            text     = result.get("text", "").strip()
-            detected_lang = result.get("language", language or "en")
-            segments = result.get("segments", [])
-
-            # Duration estimate from last segment end time or file
-            duration = round(segments[-1]["end"], 2) if segments else 0.0
-
-            logger.info(
-                f"[Whisper] Done in {elapsed:.2f}s  "
-                f"lang={detected_lang}  "
-                f"text='{text[:60]}...'"
+        # ── Existence guard — must come before any processing ──────────────────
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Audio file not found: {path}\n"
+                f"  Raw input was: {audio_path!r}\n"
+                f"  CWD: {os.getcwd()}\n"
+                f"  Parent exists: {path.parent.exists()}\n"
+                f"  This is NOT a WinError 2 / ffmpeg issue. "
+                f"The WAV file itself was not saved or was deleted before transcription."
             )
 
-            return {
-                "text":     text,
-                "language": detected_lang,
-                "duration": duration,
-                "model":    self._model_name,
-                "device":   _whisper_device or "cpu",
-                "segments": segments,
-            }
+        # ── Format check ───────────────────────────────────────────────────────
+        suffix = path.suffix.lower()
+        if suffix not in SUPPORTED_EXTS:
+            raise ValueError(
+                f"Unsupported audio format: {suffix!r}. "
+                f"Supported: {sorted(SUPPORTED_EXTS)}"
+            )
 
-        elif self._backend == "speech_recognition":
-            import speech_recognition as sr
-
-            with sr.AudioFile(str(path)) as source:
-                audio_data = self._recognizer.record(source)
-
+        # ── WAV path: bypass ffmpeg entirely ──────────────────────────────────
+        if suffix == ".wav":
+            logger.info("[Whisper] WAV detected → using soundfile (no ffmpeg)")
             try:
-                text = self._recognizer.recognize_google(audio_data, language=language or "en-US")
-            except sr.UnknownValueError:
-                text = ""
-            except sr.RequestError as e:
-                raise RuntimeError(f"Google Speech Recognition service error: {e}") from e
+                audio_np = _load_wav_direct(path)
+            except Exception:
+                traceback.print_exc()
+                raise
 
-            elapsed = time.perf_counter() - t0
-            logger.info(f"[Whisper] SpeechRecognition done in {elapsed:.2f}s")
+            logger.info(f"[Whisper] Calling _model.transcribe() on numpy array")
+            t0 = time.perf_counter()
+            try:
+                result = _model.transcribe(
+                    audio_np,           # pass numpy array, not file path
+                    fp16=    (_device == "cuda"),
+                    verbose= False,
+                )
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(
+                    f"Whisper model.transcribe() failed on numpy array: {e}\n"
+                    f"This is NOT a file path or ffmpeg issue."
+                ) from e
 
-            return {
-                "text":     text,
-                "language": language or "en",
-                "duration": 0.0,
-                "model":    "google-speech-recognition",
-                "device":   "cloud",
-                "segments": [],
-            }
+        # ── Non-WAV path: check ffmpeg then let whisper decode ─────────────────
+        else:
+            logger.info(
+                f"[Whisper] {suffix!r} format → requires ffmpeg for decoding"
+            )
+            _require_ffmpeg(suffix)   # raises RuntimeError with fix instructions
 
-        raise RuntimeError("No active STT backend loaded")
+            logger.info(
+                f"[Whisper] Calling _model.transcribe() with file path: {path}"
+            )
+            t0 = time.perf_counter()
+            try:
+                result = _model.transcribe(
+                    str(path),
+                    fp16=    (_device == "cuda"),
+                    verbose= False,
+                )
+            except FileNotFoundError as e:
+                traceback.print_exc()
+                raise RuntimeError(
+                    f"[WinError 2] Whisper triggered a FileNotFoundError even though "
+                    f"ffmpeg was detected at {_ffmpeg_path()!r}.\n"
+                    f"Original error: {e}\n"
+                    f"Check that ffmpeg works: ffmpeg -version"
+                ) from e
+            except Exception as e:
+                traceback.print_exc()
+                raise
 
-    def get_backend(self) -> str | None:
-        return self._backend
+        elapsed = time.perf_counter() - t0
+
+        segs     = result.get("segments", [])
+        duration = float(segs[-1].get("end", 0.0)) if segs else 0.0
+        text     = result.get("text", "").strip()
+        language = result.get("language", "unknown")
+
+        logger.info(
+            f"[Whisper] Done in {elapsed:.2f}s — "
+            f"lang={language}  chars={len(text)}  duration={duration:.1f}s"
+        )
+        logger.info(f"[Whisper] Transcript: {text[:100]!r}")
+
+        return {
+            "text":     text,
+            "language": language,
+            "duration": round(duration, 2),
+            "segments": [
+                {
+                    "start": round(s.get("start", 0), 2),
+                    "end":   round(s.get("end",   0), 2),
+                    "text":  s.get("text", "").strip(),
+                }
+                for s in segs
+            ],
+            "model":  WHISPER_MODEL,
+            "device": _device,
+        }
+
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+    def get_device(self) -> str | None:
+        return _device
 
 
 # ── Module-level convenience function ─────────────────────────────────────────
 
-def transcribe(
-    audio_path: str | Path,
-    language:   Optional[str] = None,
-) -> dict:
-    """
-    Transcribe audio file — convenience wrapper.
-
-    Args:
-        audio_path: Path to audio file
-        language:   Optional language code
-
-    Returns:
-        Dict with text, language, duration, model details
-    """
-    return WhisperService().transcribe(audio_path, language=language)
+def transcribe(audio_path: str | Path) -> dict:
+    """Convenience wrapper — same as WhisperService().transcribe(audio_path)."""
+    return WhisperService().transcribe(audio_path)
