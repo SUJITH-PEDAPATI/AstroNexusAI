@@ -1,178 +1,162 @@
 """
-AstroNexus AI — General Agent v2
+AstroNexus AI — Graph Agent
 
-Now uses External API Intelligence Layer for real-time data.
+Handles knowledge graph queries via Neo4j.
+Uses the existing neo4j_client.py function-based API directly —
+no class import needed.
 
-Flow:
-    query
-      ↓
-    APIRouter.select_apis()     ← Neo4j keyword → API lookup
-      ↓
-    APIFusionLayer.call()       ← parallel API calls
-      ↓
-    Build enriched prompt       ← real data + general knowledge
-      ↓
-    Ollama draft
-      ↓
-    Gemini refine (if API data present)
-      ↓
-    Final answer with real-time data cited
+Fix applied:
+    WRONG: from backend.graph.neo4j_client import Neo4jClient
+    RIGHT: from backend.graph.neo4j_client import _get_driver, get_graph_stats
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
-import urllib.request
 
 from backend.agents.state import AgentState
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE  = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL",    "qwen3:4b")
-GEMINI_KEY   = os.environ.get("GEMINI_API_KEY",  "")
 
-_SYSTEM = """\
-You are a helpful assistant for AstroNexus AI.
-When real-time data is provided in the context, use it to give accurate,
-specific answers. Always mention the data source.
-If no real-time data is available, answer from general knowledge and say so."""
-
-_SCOPE_NOTE = """\
-
----
-💡 AstroNexus AI is primarily designed for:
-  • Scientific paper Q&A — upload a PDF and ask questions
-  • Satellite image analysis — upload an image for AI analysis
-  • Knowledge graph queries — ask about authors, models, datasets"""
-
-
-def _call_ollama(prompt: str) -> str:
-    payload = json.dumps({
-        "model":  OLLAMA_MODEL,
-        "prompt": prompt,
-        "system": _SYSTEM,
-        "stream": False,
-        "options": {"temperature": 0.3, "num_predict": 600},
-    }).encode()
-    try:
-        req = urllib.request.Request(
-            f"{OLLAMA_BASE}/api/generate",
-            data=payload, headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read()).get("response", "").strip()
-    except Exception as e:
-        logger.warning(f"[GeneralAgent] Ollama failed: {e}")
-        return ""
-
-
-def _call_gemini(prompt: str) -> str:
-    if not GEMINI_KEY:
-        return ""
-    try:
-        import google.genai as genai
-        client   = genai.Client(api_key=GEMINI_KEY)
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=f"{_SYSTEM}\n\n{prompt}",
-            config={"temperature": 0.3, "max_output_tokens": 600},
-        )
-        return response.text.strip()
-    except Exception as e:
-        logger.warning(f"[GeneralAgent] Gemini failed: {e}")
-        return ""
-
-
-def general_agent_node(state: AgentState) -> AgentState:
+def graph_agent_node(state: AgentState) -> AgentState:
     """
-    LangGraph node: handle general and out-of-scope queries.
-    Uses External API Intelligence Layer for real-time data.
+    LangGraph node: knowledge graph Q&A via Neo4j.
+
+    Query flow:
+        1. Detect the topic_id for this query (stable hash of top keywords).
+        2. Retrieve the topic subgraph (filtered by topic_id).
+        3. Fall back to keyword search on Paper/Model/Dataset nodes.
+        4. Format relationships as a natural language context string.
+        5. Gracefully handle offline / empty database.
     """
     query = state.get("query", "")
-    logger.info(f"[GeneralAgent] Query: {query[:60]}")
-
-    # ── Step 1: API Intelligence Layer ────────────────────────────────────────
-    api_context = ""
-    api_names   = []
+    logger.info(f"[GraphAgent] Query: {query[:60]}")
 
     try:
-        from backend.agents.api_router  import select_apis
-        from backend.agents.api_fusion  import call_apis, format_for_prompt
+        from backend.graph.neo4j_client import _get_driver, get_graph_stats
+        from backend.agents.topic_graph_store import (
+            find_topic_by_query,
+            get_topic_graph,
+            store_query_topic,
+        )
 
-        candidates = select_apis(query)
+        driver = _get_driver()
 
-        if candidates:
+        # ── Step 1: get or create topic subgraph ─────────────────────────────
+        topic_id = find_topic_by_query(query)
+        topic_rows = get_topic_graph(topic_id)
+
+        # Ensure topic is written (creates if new) — non-fatal
+        try:
+            topic_result = store_query_topic(query=query)
+            topic_id = topic_result.topic_id
             logger.info(
-                f"[GeneralAgent] APIs selected: "
-                f"{[c.name for c in candidates]}"
+                f"[GraphAgent] topic='{topic_result.topic_label}' "
+                f"id={topic_id} new={topic_result.is_new}"
             )
-            results    = call_apis(candidates)
-            api_context = format_for_prompt(results)
-            api_names   = [r.api_name for r in results if r.success]
+            # Refresh topic rows after potential write
+            topic_rows = get_topic_graph(topic_id)
+        except Exception as _te:
+            logger.debug(f"[GraphAgent] topic store skipped: {_te}")
+
+        # ── Step 2: format topic subgraph ─────────────────────────────────────
+        results = []
+        if topic_rows:
+            lines = [f"Topic graph for '{topic_id}':\n"]
+            seen = set()
+            for row in topic_rows[:20]:
+                key = f"{row.get('relation')}:{row.get('target_name')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(
+                    f"  [{row.get('relation')}] → "
+                    f"{row.get('target_type','Node')}: {row.get('target_name')}"
+                )
+            results = topic_rows
+            answer = "\n".join(lines)
+            logger.info(f"[GraphAgent] Topic graph: {len(topic_rows)} rows")
         else:
-            logger.info("[GeneralAgent] No APIs triggered for this query")
+            # ── Step 3: fallback — keyword search across Papers/Models ─────────
+            STOP_WORDS = {
+                "who", "what", "when", "where", "how", "the", "is",
+                "are", "was", "did", "does", "a", "an", "of", "in",
+                "to", "for", "and", "or", "by", "at", "on",
+                "explain", "define", "describe",
+            }
+            keywords = [
+                w.strip("?.,!\"'").lower()
+                for w in query.split()
+                if len(w.strip("?.,!\"'")) > 3
+                and w.strip("?.,!\"'").lower() not in STOP_WORDS
+            ][:5]
+            logger.info(f"[GraphAgent] Fallback keyword search: {keywords}")
+
+            fb_rows = []
+            with driver.session() as session:
+                for kw in keywords:
+                    rows = session.run(
+                        """
+                        MATCH (n)
+                        WHERE (n:Paper OR n:Model OR n:Dataset OR n:Author
+                               OR n:Entity OR n:Keyword)
+                          AND toLower(coalesce(n.name, n.title, ''))
+                              CONTAINS toLower($kw)
+                        OPTIONAL MATCH (n)-[r]->(m)
+                        RETURN labels(n)[0]  AS type,
+                               coalesce(n.name, n.title, '') AS name,
+                               type(r)       AS relation,
+                               coalesce(m.name, m.title, '') AS related
+                        LIMIT 8
+                        """,
+                        kw=kw,
+                    ).data()
+                    fb_rows.extend(rows)
+
+            if fb_rows:
+                lines = ["Knowledge graph results (keyword search):\n"]
+                seen = set()
+                for row in fb_rows[:15]:
+                    key = f"{row.get('name')}:{row.get('related')}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if row.get("relation") and row.get("related"):
+                        lines.append(
+                            f"  {row.get('type','Node')}: {row.get('name')} "
+                            f"→ [{row.get('relation')}] → {row.get('related')}"
+                        )
+                    else:
+                        lines.append(f"  {row.get('type','Node')}: {row.get('name')}")
+                answer  = "\n".join(lines)
+                results = fb_rows
+            else:
+                stats  = get_graph_stats()
+                answer = (
+                    f"No graph data found for this query.\n"
+                    f"Graph contains: {stats.get('nodes', {})}.\n"
+                    f"topic_id={topic_id}"
+                )
+
+            logger.info(f"[GraphAgent] Fallback found {len(fb_rows)} results")
+
+        graph_context = answer
+
+    except ImportError as e:
+        # neo4j_client missing or broken — clear error
+        logger.error(f"[GraphAgent] Import error: {e}")
+        answer        = f"Graph agent import error: {e}"
+        graph_context = ""
 
     except Exception as e:
-        logger.warning(f"[GeneralAgent] API layer failed (non-fatal): {e}")
-
-    # ── Step 2: Build prompt ───────────────────────────────────────────────────
-    prompt_parts = []
-    if api_context:
-        prompt_parts.append(api_context)
-        prompt_parts.append("")
-    prompt_parts.append(f"Question: {query}")
-    if api_context:
-        prompt_parts.append(
-            "\nUse the real-time data above to answer specifically and accurately. "
-            "Cite the data source."
-        )
-    else:
-        prompt_parts.append(
-            "\nAnswer from general knowledge. Note that this is general knowledge, "
-            "not real-time data."
-        )
-
-    full_prompt = "\n".join(prompt_parts)
-
-    # ── Step 3: Generate ───────────────────────────────────────────────────────
-    answer = ""
-
-    if api_context and GEMINI_KEY:
-        # Real data present → Gemini for better synthesis
-        logger.info("[GeneralAgent] Real-time data available → Gemini")
-        answer = _call_gemini(full_prompt)
-
-    if not answer:
-        logger.info("[GeneralAgent] Calling Ollama...")
-        answer = _call_ollama(full_prompt)
-
-    if not answer:
+        # Neo4j offline, auth failure, Cypher error — graceful fallback
+        logger.warning(f"[GraphAgent] Neo4j unavailable: {e}")
         answer = (
-            "I was unable to retrieve data for this query. "
-            "Please check that Ollama is running."
+            f"Knowledge graph is currently offline or empty.\n"
+            f"Make sure Neo4j is running: docker start astronexus-neo4j\n"
+            f"Error: {e}"
         )
+        graph_context = ""
 
-    # ── Step 4: Add scope note only if no real API data ────────────────────────
-    if not api_names:
-        answer += _SCOPE_NOTE
-    else:
-        answer += f"\n\n*Data sourced from: {', '.join(api_names)}*"
-
-    logger.info(
-        f"[GeneralAgent] Done — "
-        f"apis_used={api_names} "
-        f"chars={len(answer)}"
-    )
-
-    return {
-        **state,
-        "final_answer": answer,
-        "metadata": {
-            **(state.get("metadata") or {}),
-            "apis_called":  api_names,
-            "had_real_data": bool(api_names),
-        },
-    }
+    logger.info(f"[GraphAgent] Answer: {answer[:100]}...")
+    return {**state, "graph_context": graph_context, "final_answer": answer}

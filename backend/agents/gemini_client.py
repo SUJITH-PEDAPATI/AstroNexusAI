@@ -20,7 +20,7 @@ def call_gemini(system: str, prompt: str, max_tokens: int = 1200) -> str:
         client   = genai.Client(api_key=api_key)
         full     = f"{system}\n\n{prompt}" if system else prompt
         response = client.models.generate_content(
-            model=    "gemini-2.0-flash",
+            model=    "gemini-3.1-flash-lite",
             contents= full,
             config=   types.GenerateContentConfig(
                 temperature=       0.1,

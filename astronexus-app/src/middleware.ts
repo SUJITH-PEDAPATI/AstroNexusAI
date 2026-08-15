@@ -9,12 +9,15 @@ const PROTECTED = [
   '/dashboard', '/chat', '/research', '/knowledge-graph',
   '/vision-ai', '/papers', '/profile', '/settings',
 ]
-const AUTH_ROUTES = ['/login', '/register']
+const AUTH_ROUTES = ['/login', '/register', '/forgot-password']
 const SESSION_COOKIE = 'anx_session'
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
   const hasSession = req.cookies.has(SESSION_COOKIE)
+
+  // Skip auth callback/reset routes
+  if (pathname.startsWith('/auth/')) return NextResponse.next()
 
   if (PROTECTED.some((p) => pathname === p || pathname.startsWith(p + '/'))) {
     if (!hasSession) {

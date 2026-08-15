@@ -7,6 +7,7 @@ export interface User {
   name: string
   email: string
   avatarColor: string
+  avatarUrl?: string
   provider: 'email' | 'google' | 'github'
   createdAt: string
 }

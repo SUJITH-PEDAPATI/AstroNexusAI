@@ -27,7 +27,7 @@ from backend.vision.image_loader import load_image
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME   = "gemini-2.0-flash"
+MODEL_NAME   = "gemini-3.1-flash-lite"
 MAX_IMG_SIZE = 1024
 
 _client = None

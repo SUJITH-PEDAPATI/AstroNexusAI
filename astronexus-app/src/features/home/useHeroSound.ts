@@ -22,7 +22,7 @@ export function useHeroSound(videoRef: React.RefObject<HTMLVideoElement>) {
     const dur = 600
     const step = (now: number) => {
       const p = Math.min((now - t0) / dur, 1)
-      v.volume = start + (target - start) * p
+      v.volume = Math.min(1, Math.max(0, start + (target - start) * p))
       if (p < 1) fadeRaf.current = requestAnimationFrame(step)
     }
     fadeRaf.current = requestAnimationFrame(step)

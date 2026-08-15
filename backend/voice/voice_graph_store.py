@@ -72,6 +72,7 @@ def store_voice_session(
     keywords:     "KeywordResult",
     duration_sec: float = 0.0,
     language:     str   = "en",
+    paper_ids:    list[str] | None = None,
 ) -> dict:
     """
     Write the complete voice session and its extracted entities to Neo4j.
@@ -120,6 +121,23 @@ def store_voice_session(
         ts=   ts,
     )
 
+    # ── 2b. Link VoiceSession → Paper (RELATED_TO) ──────────────────────────
+    for pid in (paper_ids or []):
+        _run(
+            """
+            MERGE (vi:VoiceInput {voice_id: $sid})
+            SET vi.text      = $text,
+                vi.timestamp = $ts
+            WITH vi
+            MATCH (p:Paper {paper_id: $pid})
+            MERGE (vi)-[:RELATED_TO]->(p)
+            """,
+            sid=session_id,
+            text=transcript[:500],
+            ts=datetime.now(timezone.utc).isoformat(),
+            pid=pid,
+        )
+
     # ── 3. Entity nodes ───────────────────────────────────────────────────────
     entities_written = 0
     for entity in keywords.entities:
@@ -152,7 +170,7 @@ def store_voice_session(
             name=  name_key,
         )
 
-        # Link session → entity
+        # Link session → entity (MENTIONED)
         _run(
             f"""
             MATCH (vs:VoiceSession {{session_id: $sid}})
@@ -161,6 +179,19 @@ def store_voice_session(
             """,
             sid=  session_id,
             name= name_key,
+        )
+        # Also write as VoiceInput MENTIONS Entity (required schema)
+        _run(
+            f"""
+            MERGE (vi:VoiceInput {{voice_id: $sid}})
+            MERGE (e:Entity {{name: $name}})
+            SET e.type = $etype
+            WITH vi, e
+            MERGE (vi)-[:MENTIONS]->(e)
+            """,
+            sid=  session_id,
+            name= name_key,
+            etype=node_label,
         )
         entities_written += 1
 

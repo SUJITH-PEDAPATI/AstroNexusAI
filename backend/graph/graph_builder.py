@@ -23,6 +23,8 @@ from backend.graph.neo4j_client import (
     _get_driver,
     write_extraction,
     create_constraints,
+    upsert_entity_for_paper,
+    upsert_keyword_for_paper,
 )
 from backend.graph.models import ExtractionResult
 
@@ -315,6 +317,35 @@ def build_graph_from_document(doc: RawDocument) -> ExtractionResult:
 
     # ── Stage 7: Ontology linking ──────────────────────────────────────────────
     _link_to_ontology(paper_node_id, result)
+
+    # ── Stage 8: HAS_ENTITY / HAS_KEYWORD links using stable paper_id ─────────
+    # doc.paper_id == metadata.paper_id (unified in models.py).
+    # This writes the paper-isolated entity/keyword links required for
+    # per-paper graph visualization and paper isolation.
+    try:
+        pid = doc.paper_id   # always metadata.paper_id after the models.py fix
+        for entity in result.models:
+            upsert_entity_for_paper(pid, entity.name, "Model")
+        for entity in result.datasets:
+            upsert_entity_for_paper(pid, entity.name, "Dataset")
+        for entity in result.authors:
+            upsert_entity_for_paper(pid, entity.name, "Author")
+        for entity in result.tasks:
+            upsert_entity_for_paper(pid, entity.name, "Task")
+        # Keywords are already written in Stage 6 via _link_paper_to_keyword
+        # Also write HAS_KEYWORD edges using the stable paper_id
+        from backend.graph.domain_classifier import classify_domain
+        domain_result = classify_domain(
+            text=doc.full_text, title=doc.metadata.title or "",
+            abstract=doc.metadata.abstract or "",
+        )
+        for kw_list in domain_result.matched_keywords.values():
+            for kw in kw_list:
+                upsert_keyword_for_paper(pid, kw)
+        logger.info(f"[GraphBuilder] HAS_ENTITY/HAS_KEYWORD links written for paper_id={pid}")
+    except Exception as e:
+        logger.warning(f"[GraphBuilder] Stage 8 failed (non-fatal): {e}")
+
     logger.info(f"[GraphBuilder] ── Graph complete: '{title}' ──")
 
     return result

@@ -1,0 +1,36 @@
+# AstroNexusAI Evaluation Configuration
+# Run: python -m evaluation.evaluate
+
+# Retrieval settings
+top_k:
+  - 1
+  - 3
+  - 5
+  - 10
+score_threshold: 0.0        # set to 0 during eval so all k results come through
+
+# LLM judge settings (Ollama — no extra cost)
+judge_model: "qwen3:4b"
+judge_temperature: 0
+
+# Generation settings (uses the real pipeline)
+generation_model: "qwen3:4b + gemini-2.0-flash"
+
+# Paths
+dataset_path: "evaluation/dataset.jsonl"
+output_dir: "evaluation/results"
+cache_dir: "evaluation/cache"
+
+# Evaluation options
+use_judge: true             # set false for --no-judge (retrieval metrics only)
+save_answers: true
+
+# Paper names (used for filtering)
+papers:
+  - "AION-1"
+  - "AstroM3"
+  - "KnowledgeGraph"
+
+# Note: paper_ids are resolved at runtime from Qdrant payloads.
+# Run: python -m evaluation.evaluate --discover-papers
+# to print actual paper_ids from your Qdrant instance.

@@ -102,3 +102,26 @@ export async function httpUpload<T>(endpoint: string, body: FormData): Promise<T
     return null
   }
 }
+
+export async function httpDelete<T>(endpoint: string): Promise<T | null> {
+  const token = getToken()
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  try {
+    const res = await fetch(`${apiConfig.baseUrl}${endpoint}`, {
+      method: 'DELETE',
+      headers,
+    })
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`
+      try { detail = (await res.json()).detail ?? detail } catch { /**/ }
+      throw new ApiError(res.status, detail)
+    }
+    return res.json() as Promise<T>
+  } catch (e) {
+    if (e instanceof ApiError) throw e
+    return null
+  }
+}
+

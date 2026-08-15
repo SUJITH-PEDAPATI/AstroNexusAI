@@ -17,7 +17,9 @@ export const apiConfig = {
     ingest: '/ingest',
     papers: '/papers',
     graph: '/graph',
+    graphTopics: '/graph/topics',
     vision: '/vision',
     dashboard: '/dashboard/stats',
+    clearPapers: '/papers',
   },
 } as const

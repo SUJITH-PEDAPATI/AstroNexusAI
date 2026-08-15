@@ -54,7 +54,7 @@ def log_result(
             log,
             route=        result.get("query_type", ""),
             agent=        meta.get("mode", ""),
-            model=        "gemini-2.0-flash" if meta.get("gemini_used") else "qwen3:4b",
+            model=        "gemini-3.1-flash-lite" if meta.get("gemini_used") else "qwen3:4b",
             paper_loaded= meta.get("paper_loaded", False),
             paper_id=     meta.get("paper_id", ""),
         )

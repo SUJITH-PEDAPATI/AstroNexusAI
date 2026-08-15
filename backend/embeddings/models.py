@@ -13,7 +13,7 @@ class EmbeddedChunk(BaseModel):
     chunk: IngestedChunk
     vector: list[float]              # 1024-dim dense vector from Qwen3-Embedding
     vector_dim: int = 384
-    embedding_model: str = "BAAI/bge-m3"
+    embedding_model: str = "BAAI/bge-m3" # IImplemented the embedding model name as a string field to keep track of which embedding model was used for this chunk. This can be useful for future reference or if multiple embedding models are used in the system.   
 
     @property
     def chunk_id(self) -> str:

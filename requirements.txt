@@ -3,16 +3,15 @@ python-docx
 unstructured
 langchain
 langchain-community
-pypdf
-python-docs
-markdown
-openai-whisper
-torch
-Pylance
-pydantic
+langchain-core
 langchain_text_splitters
 langchain_huggingface
 langchain_ollama
+langgraph
+pypdf
+markdown
+openai-whisper
+pydantic
 qdrant-client
 neo4j
 spacy
@@ -22,27 +21,27 @@ datasets==3.6.0
 numpy
 rank-bm25
 transformers>=4.46
+# torch and torchvision — install CUDA build separately:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 torch
 torchvision
 Pillow
 rasterio
-segment-anything-2
+# SAM2 — correct package (provides 'import sam2')
+# DO NOT use segment-anything-2 (wrong/legacy stub)
+sam2
 einops
 timm
 qwen-vl-utils
 accelerate
 google-genai
-openai-whisper
+google-generativeai
 edge-tts
 pyttsx3
-langgraph
-langchain-core
 fastapi
 uvicorn
 python-multipart
-google-genai
-google-generativeai
 sentence-transformers
-rank-bm25
 sounddevice
 soundfile
+Pylance

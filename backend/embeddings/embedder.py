@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import time
+from pathlib import Path
 
 from backend.ingestion.models import IngestedChunk
 from backend.embeddings.models import EmbeddedChunk
@@ -11,16 +12,23 @@ from backend.embeddings.models import EmbeddedChunk
 logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-# MODEL_NAME   = "Qwen/Qwen3-Embedding-0.6B"
-# MODEL_NAME = "Qwen/Qwen3-Embedding-4B"
-MODEL_NAME = "BAAI/bge-m3"
-# VECTOR_DIM   = 2560
-VECTOR_DIM = 1024
-BATCH_SIZE   = 32
-MAX_RETRIES  = 3
-RETRY_DELAY  = 20    # seconds between retries on 503 (model cold start)
+MODEL_NAME  = "BAAI/bge-m3"
+VECTOR_DIM  = 1024
+BATCH_SIZE  = 32
+MAX_RETRIES = 3
+RETRY_DELAY = 20    # seconds between retries on 503 (model cold start)
 
-# Qwen3-Embedding instruction prefixes
+# When True (default), use local sentence-transformers instead of HF Inference API.
+# Set USE_LOCAL_EMBEDDING=false in .env to revert to remote HF endpoint.
+USE_LOCAL_EMBEDDING: bool = (
+    os.environ.get("USE_LOCAL_EMBEDDING", "true").lower() != "false"
+)
+
+# Local model cache directory (relative to project root)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+LOCAL_MODEL_CACHE = str(_PROJECT_ROOT / "models")
+
+# Instruction prefixes (kept for future Qwen3 use)
 DOCUMENT_INSTRUCTION = (
     "Instruct: Given a scientific research paper passage, "
     "retrieve relevant passages that answer scientific questions\nPassage: "
@@ -32,9 +40,25 @@ QUERY_INSTRUCTION = (
 
 
 _vector_cache: dict[str, list[float]] = {}
-_model = None
+_model       = None   # remote HF endpoint model
+_local_model = None   # local SentenceTransformer model
 
 def _get_hf_token() -> str:
+    # Load .env explicitly — this module may be imported before any entry
+    # point (evaluate.py, main.py, etc.) has had a chance to call load_dotenv.
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        from pathlib import Path as _Path
+        # Walk up from this file to the project root (.env lives there)
+        _here = _Path(__file__).resolve()
+        for _parent in [_here.parent, _here.parent.parent, _here.parent.parent.parent]:
+            _env = _parent / ".env"
+            if _env.exists():
+                _load_dotenv(_env, override=False)  # override=False: don't clobber shell vars
+                break
+    except ImportError:
+        pass  # python-dotenv not installed; rely on shell environment
+
     token = os.environ.get("HF_API_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY")
     if not token:
         raise EnvironmentError(
@@ -45,11 +69,50 @@ def _get_hf_token() -> str:
     return token
 
 
+def _get_local_model():
+    """
+    Load BAAI/bge-m3 from local model cache via sentence-transformers.
+    This is the preferred path for evaluation — no HF API quota consumed.
+    """
+    global _local_model
+    if _local_model is not None:
+        return _local_model
+
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as e:
+        raise ImportError(
+            "Install required package: pip install sentence-transformers"
+        ) from e
+
+    logger.info(
+        f"[Embedder] Loading local model '{MODEL_NAME}' "
+        f"from cache: {LOCAL_MODEL_CACHE}"
+    )
+    _local_model = SentenceTransformer(
+        MODEL_NAME,
+        cache_folder=LOCAL_MODEL_CACHE,
+    )
+
+    # Dimension assertion — catches model/collection mismatches early
+    _probe = _local_model.encode("probe", normalize_embeddings=True)
+    actual_dim = len(_probe)
+    if actual_dim != VECTOR_DIM:
+        raise RuntimeError(
+            f"[Embedder] Dimension mismatch: model produces {actual_dim}-dim vectors "
+            f"but VECTOR_DIM={VECTOR_DIM}. "
+            f"Check MODEL_NAME and re-index Qdrant if necessary."
+        )
+    logger.info(
+        f"[Embedder] Local model ready — dim={actual_dim}, "
+        f"matches Qdrant collection ({VECTOR_DIM}-dim)."
+    )
+    return _local_model
+
+
 def _get_model():
+    """Load the remote HF Inference API endpoint model (singleton)."""
     global _model
-
-    """ Loading the model Globally if found"""
-
     if _model is not None:
         return _model
 
@@ -121,19 +184,21 @@ def embed_chunks(
     use_cache: bool = True,
 ) -> list[EmbeddedChunk]:
     """
-    Embed a list of IngestedChunks using Qwen3-Embedding-0.6B
-    via LangChain HuggingFaceEndpointEmbeddings (HF Inference API).
+    Embed a list of IngestedChunks using BAAI/bge-m3.
+
+    When USE_LOCAL_EMBEDDING=true (default), uses local sentence-transformers
+    — no HF API quota consumed. Set USE_LOCAL_EMBEDDING=false in .env to
+    revert to the remote HF Inference API endpoint.
 
     Steps:
-        1. Prepend document instruction to each chunk text
-        2. Skip chunks already in the in-process cache
-        3. Embed uncached chunks in batches via HF API
-        4. L2-normalize all vectors
-        5. Return list[EmbeddedChunk] in same order as input
+        1. Skip chunks already in the in-process cache
+        2. Embed uncached chunks in batches
+        3. L2-normalize all vectors
+        4. Return list[EmbeddedChunk] in same order as input
 
     Args:
         chunks:     Output from chunk_document()
-        batch_size: Texts per API call (default 32)
+        batch_size: Texts per call (default 32)
         use_cache:  Skip re-embedding identical text this session
 
     Returns:
@@ -141,8 +206,6 @@ def embed_chunks(
     """
     if not chunks:
         return []
-
-    model = _get_model()
 
     # ── Identify what needs embedding ─────────────────────────────────────────
     to_embed_indices: list[int] = []
@@ -159,32 +222,48 @@ def embed_chunks(
     if cached_count:
         logger.info(f"[Embedder] {cached_count} chunks served from cache")
 
-    # ── Batch embed via HF API ─────────────────────────────────────────────────
+    # ── Batch embed ────────────────────────────────────────────────────────────
     if to_embed_texts:
         total_batches = (len(to_embed_texts) + batch_size - 1) // batch_size
+        backend_name  = "local sentence-transformers" if USE_LOCAL_EMBEDDING else "HF Inference API"
         logger.info(
             f"[Embedder] Embedding {len(to_embed_texts)} chunks "
-            f"in {total_batches} batch(es) via HF API..."
+            f"in {total_batches} batch(es) via {backend_name}..."
         )
 
         all_vectors: list[list[float]] = []
 
-        for batch_start in range(0, len(to_embed_texts), batch_size):
-            batch_texts = to_embed_texts[batch_start : batch_start + batch_size]
-            batch_num   = batch_start // batch_size + 1
-
-            logger.info(
-                f"[Embedder] Batch {batch_num}/{total_batches} "
-                f"({len(batch_texts)} chunks)"
-            )
-
-            raw_vectors = _embed_with_retry(model, batch_texts)
-            all_vectors.extend(raw_vectors)
+        if USE_LOCAL_EMBEDDING:
+            local_model = _get_local_model()
+            for batch_start in range(0, len(to_embed_texts), batch_size):
+                batch_texts = to_embed_texts[batch_start : batch_start + batch_size]
+                batch_num   = batch_start // batch_size + 1
+                logger.info(
+                    f"[Embedder] Batch {batch_num}/{total_batches} "
+                    f"({len(batch_texts)} chunks) — local"
+                )
+                vecs = local_model.encode(
+                    batch_texts,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
+                all_vectors.extend(vecs.tolist())
+        else:
+            model = _get_model()
+            for batch_start in range(0, len(to_embed_texts), batch_size):
+                batch_texts = to_embed_texts[batch_start : batch_start + batch_size]
+                batch_num   = batch_start // batch_size + 1
+                logger.info(
+                    f"[Embedder] Batch {batch_num}/{total_batches} "
+                    f"({len(batch_texts)} chunks) — HF API"
+                )
+                raw_vectors = _embed_with_retry(model, batch_texts)
+                all_vectors.extend(raw_vectors)
 
         # Normalize and store in cache
         for idx, vec in zip(to_embed_indices, all_vectors):
             h = _chunk_hash(chunks[idx].text)
-            _vector_cache[h] = _normalize(vec)
+            _vector_cache[h] = _normalize(list(vec)) if not isinstance(vec, list) else _normalize(vec)
 
         logger.info(f"[Embedder] Embedding complete — {len(all_vectors)} vectors produced")
 
@@ -209,19 +288,27 @@ def embed_chunks(
 def embed_query(query_text: str) -> list[float]:
     """
     Embed a single query string for retrieval.
-    Uses query instruction — called by retriever in Step 5.
+    Called by retriever._embed_query() and ablation._eval_one_retrieval().
+
+    When USE_LOCAL_EMBEDDING=true (default): uses local SentenceTransformer.
+    When USE_LOCAL_EMBEDDING=false: uses remote HF Inference API with retry.
 
     Args:
         query_text: The user's search query
 
     Returns:
-        Normalized dense vector
+        Normalized 1024-dim dense vector (matches Qdrant 'papers' collection)
     """
-    model = _get_model()
-    instructed = query_text
+    logger.info(f"[Embedder] Embedding query (backend={'local' if USE_LOCAL_EMBEDDING else 'HF API'}): '{query_text[:60]}'")
 
-    logger.info(f"[Embedder] Embedding query: '{query_text[:60]}'")
-
-    # Use _embed_with_retry to handle 504 Gateway Timeouts
-    vectors = _embed_with_retry(model, [instructed])
-    return _normalize(vectors[0])
+    if USE_LOCAL_EMBEDDING:
+        local_model = _get_local_model()
+        vec = local_model.encode(query_text, normalize_embeddings=True)
+        vector = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+        logger.info(f"[Embedder] Query embedding dim={len(vector)}")
+        return vector
+    else:
+        model = _get_model()
+        # Use _embed_with_retry to handle 504 Gateway Timeouts
+        vectors = _embed_with_retry(model, [query_text])
+        return _normalize(vectors[0])

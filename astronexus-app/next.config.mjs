@@ -1,9 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['three'],
+  transpilePackages: ['three', '@react-three/fiber', '@react-three/drei'],
   experimental: {
-    optimizePackageImports: ['react-icons', 'framer-motion', '@react-three/drei', 'date-fns'],
+    optimizePackageImports: ['react-icons', 'framer-motion', 'date-fns'],
   },
 }
 export default nextConfig

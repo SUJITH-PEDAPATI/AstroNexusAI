@@ -32,32 +32,31 @@ class RetrievedChunk:
 
 
 def _embed_query(query: str) -> list[float]:
-    from backend.ingestion.chunking import IngestedChunk
-    from backend.embeddings import embed_chunks
+    """
+    Embed a query string for Qdrant search.
 
-    chunk = IngestedChunk(
-        chunk_id=    "query_embed",
-        paper_id=    "query",
-        chunk_index= 0,
-        text=        query,
-        section=     "query",
-        page_num=    0,
-        metadata=    {},
-    )
+    Uses embed_query() directly — faster than the embed_chunks() path
+    because it skips the IngestedChunk wrapper and the chunk-level cache
+    (which never hits for queries since every query text is unique).
+    The underlying model (_local_model) is still a singleton and loaded once.
+    """
+    from backend.embeddings import embed_query
+    return embed_query(query)
 
-    result   = embed_chunks([chunk])
-    embedded = result[0]
 
-    if hasattr(embedded, "vector"):    return list(embedded.vector)
-    if hasattr(embedded, "embedding"): return list(embedded.embedding)
-    return list(embedded)
+_qdrant_client = None   # singleton — avoids re-creating SSL/TCP connection per query
 
 
 def _qdrant_search(vector: list[float], paper_id: str | None, top_k: int) -> list:
     from qdrant_client import QdrantClient
     from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-    client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    global _qdrant_client
+    if _qdrant_client is None:
+        _qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+        logger.info(f"[Retriever] QdrantClient initialised ({QDRANT_HOST}:{QDRANT_PORT})")
+
+    client = _qdrant_client
     filt   = Filter(must=[FieldCondition(
         key="paper_id", match=MatchValue(value=paper_id)
     )]) if paper_id else None
@@ -116,14 +115,28 @@ def _bm25_rerank(query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChun
 
 
 def retrieve(
-    query:    str,
-    top_k:    int        = 5,
-    paper_id: str | None = None,
+    query:           str,
+    top_k:           int        = 5,
+    paper_id:        str | None = None,
+    filter_paper_id: str | None = None,   # alias used by ablation.py
+    score_threshold: float      = 0.0,    # post-retrieval cosine cutoff
 ) -> list[RetrievedChunk]:
     """
-    Embed query → Qdrant search → BM25 reorder → return top-k.
+    Embed query → Qdrant search → BM25 reorder → score filter → return top-k.
     Scores are cosine similarities (0.0 to 1.0).
+
+    Args:
+        query:           Search query text.
+        top_k:           Maximum number of chunks to return.
+        paper_id:        Optional paper_id filter for Qdrant (original kwarg).
+        filter_paper_id: Alias for paper_id used by the ablation pipeline.
+                         If both are supplied, filter_paper_id takes precedence.
+        score_threshold: Minimum cosine similarity score to include a chunk.
+                         Applied after BM25 reranking; 0.0 disables filtering.
     """
+    # Resolve paper filter — filter_paper_id is the ablation-side name
+    effective_paper_id = filter_paper_id if filter_paper_id is not None else paper_id
+
     try:
         vector = _embed_query(query)
         logger.info(f"[Retriever] Embedded dim={len(vector)} norm={sum(x*x for x in vector)**0.5:.3f}")
@@ -131,8 +144,10 @@ def retrieve(
         logger.error(f"[Retriever] Embed failed: {e}")
         return []
 
+    # Fetch extra candidates so score-threshold filter still leaves top_k
+    fetch_k = max(top_k * 3, top_k + 20)
     try:
-        raw = _qdrant_search(vector, paper_id, top_k * 3)
+        raw = _qdrant_search(vector, effective_paper_id, fetch_k)
         logger.info(f"[Retriever] Qdrant returned {len(raw)} results")
     except Exception as e:
         logger.error(f"[Retriever] Qdrant failed: {e}")
@@ -159,8 +174,17 @@ def retrieve(
     logger.info(f"[Retriever] Cosine scores: {[round(c.score,3) for c in chunks[:5]]}")
 
     # Reorder by BM25+RRF — scores unchanged
-    final = _bm25_rerank(query, chunks)[:top_k]
-    top   = final[0].score if final else 0
+    reranked = _bm25_rerank(query, chunks)
+
+    # Apply score threshold (post-rerank so ordering is correct first)
+    if score_threshold > 0.0:
+        reranked = [c for c in reranked if c.score >= score_threshold]
+        logger.info(
+            f"[Retriever] After threshold={score_threshold}: {len(reranked)} chunks remain"
+        )
+
+    final = reranked[:top_k]
+    top   = final[0].score if final else 0.0
 
     logger.info(f"[Retriever] Final {len(final)} chunks top_cosine={top:.3f}")
     return final

@@ -1,17 +1,32 @@
 """
-AstroNexus AI — SAM2 Segmentation (Fixed)
+AstroNexus AI — SAM2 Segmentation
 
-Root cause of empty masks:
-    SAM2ImagePredictor requires explicit point/box prompts.
-    Without prompts it returns nothing.
-    Fix: use SAM2AutomaticMaskGenerator which segments the whole image.
+Dependency (correct package — provides 'import sam2'):
+    pip install sam2                     # PyPI — sam2 v1.1+
 
-Install:
-    pip install segment-anything-2
-    # or
-    pip install git+https://github.com/facebookresearch/sam2.git
+DO NOT install 'segment-anything-2' — it is a legacy stub that does NOT provide
+the 'sam2' Python module and will cause: ModuleNotFoundError: No module named 'sam2'
+
+Model used:
+    facebook/sam2-hiera-base-plus  (HuggingFace Hub)
+    Loaded via sam2.build_sam.build_sam2_hf() — downloads weights automatically
+    on first run and caches them in ~/.cache/huggingface/hub/
+
+Root-cause of the original '[Errno 2] No such file or directory' error:
+    build_sam2(ckpt_path="facebook/sam2-hiera-base-plus") treats the HF repo-id
+    as a local filesystem path → FileNotFoundError.
+    Fix: use build_sam2_hf(model_id="facebook/sam2-hiera-base-plus") instead.
+
+GPU support:
+    Works on CUDA (RTX 4060 / any NVIDIA GPU) and CPU.
+    Requires torch with CUDA support:
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 """
 from __future__ import annotations
+
+import os
+# Windows: prevent crash when NumPy and PyTorch each ship their own OpenMP DLL
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import logging
 import random
@@ -23,7 +38,10 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+# ── Model constants ───────────────────────────────────────────────────────────
+# HuggingFace repo ID — loaded via build_sam2_hf(), NOT a local path
 HF_MODEL_ID  = "facebook/sam2-hiera-base-plus"
+
 OUTPUT_DIR   = Path("output")
 VIZ_FILENAME = "segmented.png"
 
@@ -42,9 +60,21 @@ _device    = None
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_device() -> str:
+    """Return 'cuda' if a CUDA-capable GPU is available, else 'cpu'."""
     try:
         import torch
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            gpu = torch.cuda.get_device_name(0)
+            logger.info(f"[SAM2] CUDA GPU detected: {gpu}")
+            return "cuda"
+        else:
+            logger.warning(
+                "[SAM2] No CUDA GPU found — running on CPU (slow). "
+                "Install CUDA-enabled torch: "
+                "pip install torch torchvision "
+                "--index-url https://download.pytorch.org/whl/cu124"
+            )
+            return "cpu"
     except ImportError:
         return "cpu"
 
@@ -57,10 +87,13 @@ def _load_generator():
     """
     Load SAM2AutomaticMaskGenerator — once per process.
 
+    Uses build_sam2_hf(model_id) which:
+      1. Downloads the model checkpoint from HuggingFace Hub on first call
+      2. Caches to ~/.cache/huggingface/hub/ for subsequent calls
+      3. Correctly handles the HF repo-id — does NOT treat it as a local path
+
     SAM2AutomaticMaskGenerator runs a dense grid of prompts internally
     and returns all masks without requiring caller-supplied points/boxes.
-    This is the correct API for unsupervised segmentation.
-
     Thresholds are relaxed below SAM2 defaults so satellite imagery
     (which has large uniform regions) is not entirely filtered out.
     """
@@ -70,24 +103,26 @@ def _load_generator():
         return _generator
 
     _device = _get_device()
-    logger.info(f"[SAM2] Loading SAM2AutomaticMaskGenerator on {_device.upper()}...")
+    logger.info(
+        f"[SAM2] Loading {HF_MODEL_ID} on {_device.upper()} "
+        f"via build_sam2_hf() ..."
+    )
 
     try:
         import torch
-        from sam2.build_sam import build_sam2
+        # ── Correct loader: build_sam2_hf handles HF Hub download ────────────
+        from sam2.build_sam import build_sam2_hf
         from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
-        # Build model from HuggingFace Hub checkpoint
-        sam2_model = build_sam2(
-            config_file= "configs/sam2.1/sam2.1_hiera_b+.yaml",
-            ckpt_path=   HF_MODEL_ID,
-            device=      _device,
+        sam2_model = build_sam2_hf(
+            model_id=HF_MODEL_ID,
+            device=_device,
             apply_postprocessing=False,
         )
 
         _generator = SAM2AutomaticMaskGenerator(
             model=                   sam2_model,
-            points_per_side=         16,      # 16×16 = 256 prompt points (default 32×32 is slow)
+            points_per_side=         16,      # 16×16 = 256 prompt points (32×32 default is slow)
             points_per_batch=        64,
             pred_iou_thresh=         IOU_THRESHOLD,
             stability_score_thresh=  STABILITY_THRESHOLD,
@@ -97,13 +132,30 @@ def _load_generator():
             min_mask_region_area=    MIN_MASK_AREA,
         )
 
-        logger.info("[SAM2] SAM2AutomaticMaskGenerator ready.")
+        logger.info(
+            f"[SAM2] SAM2AutomaticMaskGenerator ready "
+            f"(device={_device.upper()}, model={HF_MODEL_ID})"
+        )
         return _generator
+
+    except ImportError as e:
+        raise RuntimeError(
+            f"SAM2AutomaticMaskGenerator failed to load — 'sam2' package missing.\n"
+            f"Install with:  pip install sam2\n"
+            f"Error: {e}"
+        ) from e
 
     except Exception as e:
         raise RuntimeError(
             f"SAM2AutomaticMaskGenerator failed to load.\n"
-            f"Install: pip install segment-anything-2\n"
+            f"Model:   {HF_MODEL_ID}\n"
+            f"Device:  {_device}\n"
+            f"Tip: If you see a 'No such file or directory' error, make sure you\n"
+            f"     are NOT passing the HF repo-id as a local path to build_sam2().\n"
+            f"     This file uses build_sam2_hf() which handles HF Hub correctly.\n"
+            f"Tip: If CUDA is unavailable, install CUDA torch:\n"
+            f"     pip install torch torchvision "
+            f"--index-url https://download.pytorch.org/whl/cu124\n"
             f"Error: {e}"
         ) from e
 

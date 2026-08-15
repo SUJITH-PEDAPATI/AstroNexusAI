@@ -68,7 +68,8 @@ class _Config:
     # ── Vision ─────────────────────────────────────────────────────────────────
     DINOV2_MODEL:       str = os.environ.get("DINOV2_MODEL", "facebook/dinov2-base")
     DINOV2_VECTOR_DIM:  int = int(os.environ.get("DINOV2_VECTOR_DIM", "768"))
-    GEMINI_VISION_MODEL:str = os.environ.get("GEMINI_VISION_MODEL", "gemini-2.0-flash")
+    GEMINI_MODEL:       str = os.environ.get("GEMINI_MODEL",       "gemini-3.1-flash-lite")
+    GEMINI_VISION_MODEL:str = os.environ.get("GEMINI_VISION_MODEL", "gemini-3.1-flash-lite")
     SAM2_MODEL:         str = os.environ.get("SAM2_MODEL", "facebook/sam2-hiera-base-plus")
     VISION_MAX_IMG_SIZE:int = int(os.environ.get("VISION_MAX_IMG_SIZE", "1024"))
 
