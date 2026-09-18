@@ -32,6 +32,15 @@ export const useAuthStore = create<AuthState>()(
 
       logout: () => {
         deleteCookie(SESSION_COOKIE)
+        // Also clear any Supabase auth cookies (pattern: sb-*-auth-token*)
+        if (typeof document !== 'undefined') {
+          document.cookie.split(';').forEach(c => {
+            const name = c.trim().split('=')[0]
+            if (name.startsWith('sb-') && name.includes('auth-token')) {
+              document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`
+            }
+          })
+        }
         set({ user: null, token: null, loading: false })
       },
 

@@ -1,12 +1,3 @@
-"""
-AstroNexus AI — Retriever (Fixed RRF scoring bug)
-
-Bug: RRF reranking was overwriting cosine similarity scores with
-     tiny RRF weights (0.016). Abstention threshold saw 0.016 and
-     refused to answer even when retrieval was correct.
-
-Fix: Use RRF only for ORDERING. Keep original cosine score.
-"""
 from __future__ import annotations
 
 import logging, os, re
@@ -32,14 +23,6 @@ class RetrievedChunk:
 
 
 def _embed_query(query: str) -> list[float]:
-    """
-    Embed a query string for Qdrant search.
-
-    Uses embed_query() directly — faster than the embed_chunks() path
-    because it skips the IngestedChunk wrapper and the chunk-level cache
-    (which never hits for queries since every query text is unique).
-    The underlying model (_local_model) is still a singleton and loaded once.
-    """
     from backend.embeddings import embed_query
     return embed_query(query)
 
@@ -77,10 +60,6 @@ def _qdrant_search(vector: list[float], paper_id: str | None, top_k: int) -> lis
 
 
 def _bm25_rerank(query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    """
-    Reorder chunks using BM25 + RRF fusion.
-    IMPORTANT: preserve original cosine score — only change ORDER.
-    """
     if len(chunks) <= 1:
         return chunks
     try:
@@ -121,19 +100,6 @@ def retrieve(
     filter_paper_id: str | None = None,   # alias used by ablation.py
     score_threshold: float      = 0.0,    # post-retrieval cosine cutoff
 ) -> list[RetrievedChunk]:
-    """
-    Embed query → Qdrant search → BM25 reorder → score filter → return top-k.
-    Scores are cosine similarities (0.0 to 1.0).
-
-    Args:
-        query:           Search query text.
-        top_k:           Maximum number of chunks to return.
-        paper_id:        Optional paper_id filter for Qdrant (original kwarg).
-        filter_paper_id: Alias for paper_id used by the ablation pipeline.
-                         If both are supplied, filter_paper_id takes precedence.
-        score_threshold: Minimum cosine similarity score to include a chunk.
-                         Applied after BM25 reranking; 0.0 disables filtering.
-    """
     # Resolve paper filter — filter_paper_id is the ablation-side name
     effective_paper_id = filter_paper_id if filter_paper_id is not None else paper_id
 

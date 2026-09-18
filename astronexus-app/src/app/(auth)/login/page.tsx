@@ -21,7 +21,9 @@ function LoginForm() {
   const params = useSearchParams()
 
   const [submitting, setSubmitting]   = useState(false)
-  const [authError,  setAuthError]    = useState<string | null>(null)
+  const [authError,  setAuthError]    = useState<string | null>(
+    params.get('error') ? decodeURIComponent(params.get('error')!) : null
+  )
   const [showPw,     setShowPw]       = useState(false)
   const [needsVerify, setNeedsVerify] = useState(false)
   const [verifyEmail, setVerifyEmail] = useState('')

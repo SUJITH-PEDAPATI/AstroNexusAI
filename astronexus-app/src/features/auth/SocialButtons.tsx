@@ -1,29 +1,32 @@
 'use client'
 import { useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
 import { FcGoogle } from 'react-icons/fc'
 import { FiGithub, FiAlertCircle } from 'react-icons/fi'
 import { useAuth } from '@/hooks/useAuth'
 import { Spinner } from '@/components/ui/Spinner'
 
 export function SocialButtons() {
-  const { social } = useAuth()
-  const router = useRouter()
-  const params = useSearchParams()
+  const { social, isDemo } = useAuth()
   const [loading, setLoading] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError]     = useState<string | null>(null)
 
   const go = async (provider: 'google' | 'github') => {
     setLoading(provider)
     setError(null)
     try {
       await social(provider)
-      router.push(params.get('from') || '/dashboard')
+      // For Supabase OAuth: social() triggers a full-page redirect to the provider.
+      // Do NOT call router.push() here — it races with the redirect and causes a flash.
+      // The redirect chain is: Provider → /auth/callback → /dashboard.
+      //
+      // For demo mode: social() sets the user in the store synchronously, so
+      // AuthGate will handle the redirect via its effect. No router.push needed.
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Social sign-in failed. Please try again.')
-    } finally {
+      setError(err instanceof Error ? err.message : 'Social sign-in failed.')
       setLoading(null)
     }
+    // NOTE: setLoading(null) is NOT called on success because the page is
+    // navigating away. Calling it would briefly flash the buttons before redirect.
   }
 
   return (

@@ -8,7 +8,6 @@ import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { Avatar } from '@/components/ui/Avatar'
-import { useAuth } from '@/hooks/useAuth'
 
 const schema = z.object({ name: z.string().min(2), email: z.string().email() })
 type Values = z.infer<typeof schema>
@@ -20,7 +19,6 @@ const ACTIVITY = [
 ]
 
 export default function ProfilePage() {
-  const { user, updateUser } = useAuth()
   const [saved, setSaved] = useState(false)
   const { register, handleSubmit, formState: { errors, isDirty } } = useForm<Values>({
     resolver: zodResolver(schema),

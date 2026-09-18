@@ -48,7 +48,7 @@ def _gemini(system: str, prompt: str) -> str:
         from google.genai import types
         client   = genai.Client(api_key=GEMINI_KEY)
         response = client.models.generate_content(
-            model=    "gemini-3.1-flash-lite",
+            model=    "gemini-2.5-flash",
             contents= f"{system}\n\n{prompt}",
             config=   types.GenerateContentConfig(temperature=0.2, max_output_tokens=800),
         )

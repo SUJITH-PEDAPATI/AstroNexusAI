@@ -30,6 +30,7 @@ class AgentState(TypedDict):
 
     # ── Session state ─────────────────────────────────────────────────────────
     paper_loaded:  Optional[bool]
+    paper_id:      Optional[str]   # ID of the paper currently in context
     turn_count:    Optional[int]
     error:         Optional[str]
 

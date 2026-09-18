@@ -8,10 +8,10 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { AreaChart } from '@/components/ui/charts/AreaChart'
 import { BarChart } from '@/components/ui/charts/BarChart'
 import { DonutChart } from '@/components/ui/charts/DonutChart'
-import { useAuth } from '@/hooks/useAuth'
 import { http } from '@/services/http'
 import { apiConfig } from '@/lib/config'
 import { stagger, fadeUp } from '@/lib/motion'
+import { useAuthStore } from '@/store/auth.store'
 import {
   FALLBACK_STAT_CARDS, FALLBACK_USAGE_TREND, FALLBACK_QUERY_BARS,
   FALLBACK_RECENT_ACTIVITY, FALLBACK_BOOKMARKS,
@@ -23,8 +23,7 @@ const ICON_MAP = [FiMessageSquare, FiFileText, FiZap, FiTrendingUp]
 const ACCENT_MAP = ['#8A8A8A', '#6E6E6E', '#B4B4B4', '#A8A49E']
 
 export default function DashboardPage() {
-  const { user } = useAuth()
-
+  const { user } = useAuthStore()
   const { data, isLoading } = useQuery<DashboardStats>({
     queryKey: ['dashboard-stats'],
     queryFn: async () => {

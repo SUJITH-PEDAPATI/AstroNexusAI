@@ -39,7 +39,7 @@ const DEMO_ANSWERS: { match: RegExp; answer: string; citations: Citation[] }[] =
 ]
 
 const FALLBACK: ChatResult = {
-  answer: 'Backend is unreachable. Start the server with:\n\n```\nuvicorn backend.api.server:app --reload --port 8000\n```\n\nfrom your project root, then set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `.env.local`.',
+  answer: '⚠️ **Unable to reach the AstroNexus AI backend right now.**\n\nThis is usually a temporary network issue. Please try again in a moment.\n\nIf the problem persists, make sure the backend server is running on `http://localhost:8000`.',
   grade:        'N/A',
   citations:    [],
   search_type:  'local_rag',

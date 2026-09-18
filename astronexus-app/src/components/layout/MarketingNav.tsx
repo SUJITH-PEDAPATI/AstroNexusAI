@@ -5,14 +5,12 @@ import { motion } from 'framer-motion'
 import { FiArrowUpRight } from 'react-icons/fi'
 import { Logo } from '@/components/ui/Logo'
 import { MARKETING_NAV } from '@/lib/navigation'
-import { useAuthStore } from '@/store/auth.store'
 import { EASE } from '@/lib/motion'
 import { cn } from '@/lib/cn'
 
 /** Floating, glass navbar for public pages. */
 export function MarketingNav() {
   const [scrolled, setScrolled] = useState(false)
-  const user = useAuthStore((s) => s.user)
   useEffect(() => {
     const h = () => setScrolled(window.scrollY > 40)
     window.addEventListener('scroll', h, { passive: true })
@@ -31,9 +29,9 @@ export function MarketingNav() {
               className="rounded-lg px-4 py-2 text-sm text-dim transition-colors hover:bg-white/5 hover:text-light">{l.label}</Link>
           ))}
         </div>
-        <Link href={user ? '/dashboard' : '/login'}
+        <Link href='/dashboard'
           className="flex items-center gap-1.5 rounded-full bg-blue px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-bright">
-          {user ? 'Open App' : 'Sign in'} <FiArrowUpRight className="h-3.5 w-3.5" />
+          {'Open App'} <FiArrowUpRight className="h-3.5 w-3.5" />
         </Link>
       </nav>
     </motion.header>

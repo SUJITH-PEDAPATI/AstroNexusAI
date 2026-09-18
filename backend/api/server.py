@@ -41,31 +41,73 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS — allow the Next.js dev server and any production origin you add
-_origins = os.environ.get(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:3001",
-).split(",")
+# CORS — open to all origins.
+#
+# Authentication has been removed from AstroNexusAI, so there are no
+# session cookies or credentials that need strict origin protection.
+# Using allow_origins=["*"] + allow_credentials=False is the correct
+# configuration: it allows any frontend origin (localhost:3000, any port,
+# any hostname) without the strict origin-matching requirement that caused
+# the OPTIONS 400 errors when allow_credentials=True was set.
+#
+# Previous bug: allow_credentials=True forces the browser to send a CORS
+# preflight for every custom header (e.g. Content-Type: application/json).
+# FastAPI's CORSMiddleware rejects the preflight with 400 if the Origin
+# doesn't exactly match allow_origins — even with correct origins listed,
+# subtle mismatches (port variations, IP vs hostname) caused failures.
+
+logger.info("[CORS] Open to all origins (credentials=False)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Timing"],
 )
 
 # ── Warm up the pipeline once on startup so the first chat request is fast ────
 
 @app.on_event("startup")
 async def _warmup():
+    """
+    Pre-load the LangGraph pipeline and embedding model at startup.
+    This moves the ~60s Ollama model-load cost to startup time instead of
+    making the first user request wait for it.
+    """
+    import asyncio
+
+    # 1. Compile the LangGraph (fast — just Python graph construction)
     try:
         from backend.agents.orchestrator import get_graph
         get_graph()
-        logger.info("[server] Pipeline ready.")
+        logger.info("[server] LangGraph pipeline ready.")
     except Exception as exc:
-        # Non-fatal: the first request will warm it up instead
-        logger.warning(f"[server] Warmup skipped: {exc}")
+        logger.warning(f"[server] LangGraph warmup skipped: {exc}")
+
+    # 2. Warm up the embedding model in a background thread so startup
+    #    doesn't block (Ollama model load can take 30-90s on first call).
+    #    The model is a singleton; once loaded it stays in memory.
+    async def _warm_embedder():
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _load_embedder)
+        except Exception as exc:
+            logger.warning(f"[server] Embedder warmup skipped: {exc}")
+
+    asyncio.create_task(_warm_embedder())
+
+
+def _load_embedder():
+    """Load the embedding model singleton (runs in a thread pool)."""
+    try:
+        from backend.embeddings.embedder import embed_query
+        embed_query("warmup")   # triggers _get_model() singleton init
+        logger.info("[server] Embedding model warmed up.")
+    except Exception as exc:
+        logger.warning(f"[server] Embedder warmup failed: {exc}")
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -92,14 +134,15 @@ class CitationOut(BaseModel):
 class ChatResponse(BaseModel):
     """
     Matches what chat.service.ts (frontend) reads:
-        { answer, grade, citations }
-    Extra fields are included so nothing is thrown away if the
-    frontend is later extended to display them.
+        { answer, grade, citations, search_type, search_label, web_sources }
     """
-    answer:      str
-    grade:       str          # "A" | "B" | "C"
-    citations:   list[CitationOut]
-    # ── extras (displayed when frontend is ready) ──
+    answer:       str
+    grade:        str                  # "A" | "B" | "C"
+    citations:    list[CitationOut]
+    search_type:  str             = "local_rag"
+    search_label: str             = "📄 Research Papers"
+    web_sources:  list[dict]      = []
+    # ── extras ──
     confidence:      str   = ""
     grounding_score: float = 0.0
     query_type:      str   = ""
@@ -138,7 +181,10 @@ async def chat(req: ChatRequest):
     # Every text query creates/updates a topic subgraph.
     # Same topic is reused when follow-up queries share top keywords.
     try:
-        from backend.agents.topic_graph_store import store_query_topic
+        try:
+            from backend.agents.topic_graph_store import store_query_topic
+        except ImportError:
+            from topic_graph_store import store_query_topic
         import uuid as _uuid_mod
 
         # Extract paper_ids from Qdrant result if available in the response
@@ -171,6 +217,16 @@ async def chat(req: ChatRequest):
     meta       = result.get("metadata") or {}
     evaluation = meta.get("evaluation") or {}
 
+    # ── Component timing from pipeline result (for X-Timing header) ──────────
+    _timings  = result.get("timings") or {}
+    _timing_parts = []
+    for _k in ["router", "retrieval", "neo4j", "agent", "llm", "evaluation"]:
+        _v = _timings.get(_k)
+        if _v is not None:
+            _timing_parts.append(f"{_k}={round(float(_v)*1000,1)}")
+    _timing_parts.append(f"total={round(elapsed*1000,1)}")
+    _x_timing = "; ".join(_timing_parts)
+
     # ── Map confidence → grade (same scale the frontend shows) ───────────────
     confidence = evaluation.get("confidence", "")
     grade_map  = {"HIGH": "A", "MEDIUM": "B", "LOW": "C"}
@@ -187,14 +243,34 @@ async def chat(req: ChatRequest):
                 score=  float(c.get("score") or 0.0),
             ))
 
-    return ChatResponse(
+    # Determine search type from the pipeline result
+    _qtype = str(result.get("query_type") or "research")
+    if _qtype in ("web_search", "web"):
+        _search_type  = "web_search"
+        _search_label = "🌐 Web Search"
+    elif _qtype == "hybrid":
+        _search_type  = "hybrid"
+        _search_label = "📄 + 🌐 Hybrid"
+    else:
+        _search_type  = "local_rag"
+        _search_label = "📄 Research Papers"
+
+    from fastapi.responses import JSONResponse
+    _resp_data = ChatResponse(
         answer=          answer,
         grade=           grade,
         citations=       citations,
+        search_type=     _search_type,
+        search_label=    _search_label,
+        web_sources=     meta.get("web_sources", []),
         confidence=      confidence,
         grounding_score= float(evaluation.get("grounding_score", 0.0)),
-        query_type=      str(result.get("query_type") or ""),
+        query_type=      _qtype,
         is_reliable=     bool(evaluation.get("is_reliable", False)),
+    )
+    return JSONResponse(
+        content=_resp_data.model_dump(),
+        headers={"X-Timing": _x_timing} if _x_timing else {},
     )
 
 
@@ -1481,7 +1557,10 @@ async def get_graph_data(
 async def list_graph_topics():
     """Return all topics for the topic filter dropdown."""
     try:
-        from backend.agents.topic_graph_store import list_topics
+        try:
+            from backend.agents.topic_graph_store import list_topics
+        except ImportError:
+            from topic_graph_store import list_topics
         return list_topics(limit=50)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

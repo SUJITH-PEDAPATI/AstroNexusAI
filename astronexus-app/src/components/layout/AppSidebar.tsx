@@ -7,13 +7,13 @@ import { Logo } from '@/components/ui/Logo'
 import { Avatar } from '@/components/ui/Avatar'
 import { APP_NAV, APP_NAV_FOOTER } from '@/lib/navigation'
 import { useUIStore } from '@/store/ui.store'
-import { useAuth } from '@/hooks/useAuth'
+import { useAuthStore } from '@/store/auth.store'
 import { cn } from '@/lib/cn'
 
 export function AppSidebar() {
   const pathname = usePathname()
   const { sidebarOpen, toggleSidebar } = useUIStore()
-  const { user, signOut } = useAuth()
+  const { user, logout } = useAuthStore()
 
   const isActive = (href: string) =>
     pathname === href || (href !== '/chat' && pathname.startsWith(href + '/')) ||
@@ -73,7 +73,7 @@ export function AppSidebar() {
               </div>
             )}
             {sidebarOpen && (
-              <button onClick={signOut} className="rounded-lg p-1.5 text-dim hover:bg-white/5 hover:text-red-400" aria-label="Sign out">
+              <button onClick={logout} className="rounded-lg p-1.5 text-dim hover:bg-white/5 hover:text-red-400" aria-label="Sign out">
                 <FiLogOut className="h-4 w-4" />
               </button>
             )}

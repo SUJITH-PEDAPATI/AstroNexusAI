@@ -44,12 +44,14 @@
   --text-secondary: #9A9A9A;
   --text-tertiary:  #626262;
 
-  /* ── Glass cards ─────────────────────────────────────────────────────── */
-  --card-bg:        rgba(255, 255, 255, 0.03);
-  --card-bg-hover:  rgba(255, 255, 255, 0.055);
-  --border:         rgba(255, 255, 255, 0.06);
-  --border-hover:   rgba(255, 255, 255, 0.12);
+  /* ── Glass cards (premium glassmorphism) ───────────────────────────────── */
+  --card-bg:        rgba(255, 255, 255, 0.035);
+  --card-bg-hover:  rgba(255, 255, 255, 0.06);
+  --border:         rgba(255, 255, 255, 0.07);
+  --border-hover:   rgba(255, 255, 255, 0.14);
   --hover:          rgba(255, 255, 255, 0.04);
+  --glass-blur:     24px;
+  --glass-shadow:   0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
   /* ── Typography ──────────────────────────────────────────────────────── */
   --font-display: 'Space Grotesk', system-ui, sans-serif;
@@ -145,127 +147,3 @@ body {
 /* ══════════════════════════════════════════════════════════════════════════
    COMPONENT PRIMITIVES
    ══════════════════════════════════════════════════════════════════════════ */
-
-/* Glass card */
-.anx-card {
-  background: var(--card-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  transition: background 0.3s ease, border-color 0.3s ease;
-}
-.anx-card:hover {
-  background: var(--card-bg-hover);
-  border-color: var(--border-hover);
-}
-
-/* Primary button — graphite gradient */
-.anx-button {
-  background: var(--button-gradient);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  color: var(--text-primary);
-  transition: background 0.22s ease, border-color 0.22s ease, transform 0.12s ease;
-}
-.anx-button:hover {
-  background: var(--button-gradient-hover);
-  border-color: rgba(255, 255, 255, 0.16);
-}
-.anx-button:active {
-  background: var(--button-gradient-active);
-  transform: translateY(1px);
-}
-
-/* Sidebar gradient */
-.anx-sidebar {
-  background: linear-gradient(
-    180deg,
-    rgba(18, 18, 18, 0.92) 0%,
-    rgba(10, 10, 10, 0.95) 100%
-  );
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-}
-
-/* Active sidebar item — subtle silver glow */
-.anx-nav-active {
-  background: rgba(255, 255, 255, 0.055);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-}
-
-.lenis.lenis-smooth { scroll-behavior: auto !important; }
-
-/* ══════════════════════════════════════════════════════════════════════════
-   BROWSER CHROME
-   ══════════════════════════════════════════════════════════════════════════ */
-
-::selection { background: rgba(255, 255, 255, 0.16); color: #fff; }
-
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.18); }
-
-:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.35);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
-   MARKDOWN / CHAT PROSE — monochrome
-   ══════════════════════════════════════════════════════════════════════════ */
-
-.prose-anx { color: #CFCFCF; line-height: 1.7; font-size: 0.9rem; }
-.prose-anx h1, .prose-anx h2, .prose-anx h3 {
-  color: var(--text-primary);
-  font-family: var(--font-display);
-  font-weight: 600;
-  margin: 1em 0 0.5em;
-}
-.prose-anx p  { margin: 0.6em 0; }
-.prose-anx ul, .prose-anx ol { margin: 0.6em 0; padding-left: 1.4em; }
-.prose-anx li { margin: 0.3em 0; }
-.prose-anx ul { list-style: disc; }
-.prose-anx ol { list-style: decimal; }
-.prose-anx strong { color: var(--text-primary); font-weight: 600; }
-.prose-anx a { color: var(--silver-bright); text-decoration: underline; text-underline-offset: 2px; }
-.prose-anx code {
-  background: rgba(255, 255, 255, 0.06);
-  padding: 0.15em 0.4em;
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  color: var(--silver-bright);
-}
-.prose-anx pre {
-  background: #0A0A0A;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1em;
-  overflow-x: auto;
-  margin: 0.8em 0;
-}
-.prose-anx pre code { background: none; padding: 0; color: #DADADA; }
-.prose-anx blockquote {
-  border-left: 3px solid rgba(255, 255, 255, 0.18);
-  padding-left: 1em;
-  color: var(--text-secondary);
-  margin: 0.8em 0;
-}
-.prose-anx table { width: 100%; border-collapse: collapse; margin: 0.8em 0; font-size: 0.85em; }
-.prose-anx th, .prose-anx td { border: 1px solid var(--border); padding: 0.5em 0.7em; text-align: left; }
-.prose-anx .katex { color: #DADADA; }
-
-/* ══════════════════════════════════════════════════════════════════════════
-   REDUCED MOTION
-   ══════════════════════════════════════════════════════════════════════════ */
-
-@media (prefers-reduced-motion: reduce) {
-  .anx-bg { animation: none; }
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
-  }
-}

@@ -21,7 +21,7 @@ function mapSupabaseUser(su: { id: string; email?: string; user_metadata?: Recor
 function demoUser(email: string, provider: User['provider'] = 'email', name?: string): User {
   return {
     id: uid(),
-    name: name ?? (email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'Researcher'),
+    name: name ?? email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'Researcher',
     email,
     avatarColor: AVATAR_COLORS[email.length % AVATAR_COLORS.length],
     provider,
@@ -79,13 +79,26 @@ export const authService = {
   /** OAuth sign-in (Google / GitHub). Redirects to provider. */
   async social(provider: 'google' | 'github'): Promise<void> {
     const sb = getSupabase()
-    if (!sb) return  // demo mode — handled in useAuth
+    if (!sb) {
+      console.warn(`[Auth] Supabase not configured — ${provider} OAuth running in demo mode`)
+      return  // demo mode — handled in useAuth
+    }
 
-    const { error } = await sb.auth.signInWithOAuth({
+    console.log(`[Auth] Starting ${provider} OAuth → redirectTo: ${window.location.origin}/auth/callback`)
+
+    const { data, error } = await sb.auth.signInWithOAuth({
       provider,
       options: { redirectTo: `${window.location.origin}/auth/callback` },
     })
-    if (error) throw new AuthError(error.message)
+
+    if (error) {
+      console.error(`[Auth] ${provider} OAuth failed:`, error.message)
+      throw new AuthError(error.message)
+    }
+
+    // signInWithOAuth returns { data: { url, provider } } — the browser should
+    // redirect to data.url. If it doesn't, something is blocking the redirect.
+    console.log(`[Auth] ${provider} OAuth initiated — redirect URL:`, data?.url)
   },
 
   /** Sign out. */

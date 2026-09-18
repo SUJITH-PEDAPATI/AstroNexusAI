@@ -1,54 +1,90 @@
 """
-AstroNexus AI — Orchestrator v3.0
+AstroNexus AI — LangGraph Orchestrator
 
-Change from v2:
-    - Accepts conversation_history in run()
-    - Returns updated conversation_history in result
-    - Caller passes history back on next turn for multi-turn sessions
+Builds and runs the multi-agent pipeline:
+
+    ┌─────────────┐
+    │   Router    │   classifies query type
+    └──────┬──────┘
+           │
+    ┌──────▼──────────────────────────────────┐
+    │  research | satellite | graph | voice   │  conditional branch
+    └──────┬──────────────────────────────────┘
+           │
+    ┌──────▼──────┐
+    │ VoiceAgent  │   TTS if voice mode (optional)
+    └──────┬──────┘
+           │
+         END
+
+Install: pip install langgraph langchain-core
 """
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_graph = None
-
 
 def build_graph():
+    """
+    Build and compile the LangGraph StateGraph.
+    Returns a compiled graph ready for .invoke() calls.
+    """
     from langgraph.graph import StateGraph, END
+
     from backend.agents.state           import AgentState
     from backend.agents.router          import router_node, route_decision
     from backend.agents.research_agent  import research_agent_node
     from backend.agents.satellite_agent import satellite_agent_node
-    from backend.agents.graph_agent_v2  import general_agent_node as graph_agent_node
+    from backend.agents.graph_agent     import graph_agent_node
     from backend.agents.voice_agent     import voice_agent_node
-    from backend.agents.general_agent   import general_agent_node
+    from backend.agents.web_search_agent import web_search_agent_node
 
     graph = StateGraph(AgentState)
+
+    # ── Add nodes ──────────────────────────────────────────────────────────────
     graph.add_node("router",    router_node)
     graph.add_node("research",  research_agent_node)
     graph.add_node("satellite", satellite_agent_node)
     graph.add_node("graph",     graph_agent_node)
-    graph.add_node("voice",     voice_agent_node)
-    graph.add_node("general",   general_agent_node)
+    graph.add_node("voice",      voice_agent_node)
+    graph.add_node("web_search", web_search_agent_node)
+    graph.add_node("hybrid",     web_search_agent_node)
+
+    # ── Entry point ────────────────────────────────────────────────────────────
     graph.set_entry_point("router")
+
+    # ── Conditional routing ────────────────────────────────────────────────────
     graph.add_conditional_edges(
-        "router", route_decision,
+        "router",
+        route_decision,
         {
             "research":   "research",
             "satellite":  "satellite",
             "graph":      "graph",
-            "voice":      "research",
-            "general":    "general",
-            # web_search / hybrid → general until full web agent is ready
-            "web_search": "general",
-            "hybrid":     "general",
+            "voice":      "research",    # voice queries → research then TTS
+            "web_search": "web_search",  # live/current queries → web
+            "hybrid":     "hybrid",      # needs both RAG + web
         },
     )
-    for node in ["research","satellite","graph","voice","general"]:
-        graph.add_edge(node, END)
+
+    # ── All agents → voice (TTS) if needed, then END ──────────────────────────
+    # For simplicity in V1: agents → END directly
+    # Voice output is handled inside voice_agent when query_type == "voice"
+    graph.add_edge("research",  END)
+    graph.add_edge("satellite", END)
+    graph.add_edge("graph",      END)
+    graph.add_edge("web_search", END)
+    graph.add_edge("hybrid",     END)
+    graph.add_edge("voice",     END)
+
     return graph.compile()
+
+
+# ── Singleton compiled graph ───────────────────────────────────────────────────
+_graph = None
 
 
 def get_graph():
@@ -60,73 +96,74 @@ def get_graph():
 
 def run(
     query:                str,
-    audio_path:           str | None   = None,
-    image_path:           str | None   = None,
-    paper_loaded:         bool         = False,
-    paper_id:             str | None   = None,
-    conversation_history: list | None  = None,   # ← pass previous turns
-    prev_state:           dict | None  = None,
+    audio_path:           str | None  = None,
+    image_path:           str | None  = None,
+    paper_loaded:         bool        = False,
+    paper_id:             str | None  = None,
+    conversation_history: list | None = None,
 ) -> dict:
     """
-    Run the AstroNexus pipeline.
+    Run the full AstroNexus multi-agent pipeline.
 
-    For multi-turn conversations:
-        result1 = run("What is the main contribution?", paper_id=pid)
-        history = result1["conversation_history"]
+    Args:
+        query:                User question (text)
+        audio_path:           Optional audio file for voice input
+        image_path:           Optional satellite image path
+        paper_loaded:         True when a specific paper is in context
+        paper_id:             ID of the paper currently in context
+        conversation_history: Previous turns [{turn, query, answer, query_type}]
 
-        result2 = run("What are its limitations?",
-                      paper_id=pid,
-                      conversation_history=history)   # ← pass back
-        history = result2["conversation_history"]
-
-        result3 = run("Can you compare it with BERT?",
-                      paper_id=pid,
-                      conversation_history=history)
+    Returns:
+        {
+            "query":            str,
+            "query_type":       str,
+            "final_answer":     str,
+            "rag_context":      str | None,
+            "graph_context":    str | None,
+            "satellite_result": dict | None,
+            "audio_out":        str | None,
+            "error":            str | None,
+            "metadata":         dict,
+        }
     """
     from langchain_core.messages import HumanMessage
 
-    history     = conversation_history or []
-    prev_route  = (prev_state or {}).get("query_type")
-    prev_turn   = (prev_state or {}).get("turn_count", 0)
+    meta: dict = {}
+    if image_path:
+        meta["image_path"] = image_path
+    if paper_id:
+        meta["paper_id"] = paper_id
 
     initial_state = {
-        "messages":            [HumanMessage(content=query)],
-        "query":               query,
-        "audio_path":          audio_path,
-        "query_type":          prev_route,
-        "metadata":            {
-            "image_path":   image_path,
-            "paper_id":     paper_id,
-            "paper_loaded": paper_loaded,
-        },
-        "rag_context":         None,
-        "graph_context":       None,
-        "satellite_result":    None,
-        "final_answer":        None,
-        "audio_out":           None,
-        "paper_loaded":        paper_loaded,
-        "turn_count":          prev_turn + 1,
-        "error":               None,
-        "conversation_history":history,         # ← injected into state
+        "messages":              [HumanMessage(content=query)],
+        "query":                 query,
+        "audio_path":            audio_path,
+        "query_type":            None,
+        "rag_context":           None,
+        "graph_context":         None,
+        "satellite_result":      None,
+        "final_answer":          None,
+        "audio_out":             None,
+        "error":                 None,
+        "paper_loaded":          paper_loaded,
+        "conversation_history":  conversation_history or [],
+        "turn_count":            len(conversation_history) if conversation_history else 0,
+        "metadata":              meta,
     }
 
-    logger.info(
-        f"[Orchestrator] Turn {prev_turn+1} | "
-        f"'{query[:50]}' | "
-        f"history={len(history)} turns"
-    )
+    logger.info(f"[Orchestrator] Running pipeline for: {query[:60]}")
 
-    final_state = get_graph().invoke(initial_state)
+    graph        = get_graph()
+    final_state  = graph.invoke(initial_state)
 
     return {
-        "query":                final_state.get("query"),
-        "query_type":           final_state.get("query_type"),
-        "final_answer":         final_state.get("final_answer"),
-        "rag_context":          final_state.get("rag_context"),
-        "graph_context":        final_state.get("graph_context"),
-        "satellite_result":     final_state.get("satellite_result"),
-        "audio_out":            final_state.get("audio_out"),
-        "error":                final_state.get("error"),
-        "conversation_history": final_state.get("conversation_history", history),  # ← returned
-        "_state":               final_state,
+        "query":            final_state.get("query"),
+        "query_type":       final_state.get("query_type"),
+        "final_answer":     final_state.get("final_answer"),
+        "rag_context":      final_state.get("rag_context"),
+        "graph_context":    final_state.get("graph_context"),
+        "satellite_result": final_state.get("satellite_result"),
+        "audio_out":        final_state.get("audio_out"),
+        "error":            final_state.get("error"),
+        "metadata":         final_state.get("metadata") or {},
     }

@@ -100,33 +100,107 @@ def _extract_source(url: str) -> str:
 
 def _ddg_search(query: str, n: int) -> list[WebResult]:
     """
-    DuckDuckGo Instant Answer API.
-    Free, no auth, ~0.3s latency.  Limited to top snippets.
+    DuckDuckGo HTML search — no API key required.
+
+    Uses the DDG HTML endpoint which returns real web results, unlike the
+    Instant Answer API (api.duckduckgo.com/?format=json) which only
+    returns results for well-known entities and is empty for most queries.
     """
-    # HTML search endpoint (more results than Instant Answer API)
-    params = {"q": query, "format": "json", "no_redirect": "1", "no_html": "1"}
-    url    = "https://api.duckduckgo.com/?" + urllib.parse.urlencode(params)
+    import html
+    import re as _re
+
+    # DDG HTML search endpoint
+    params = {"q": query, "kl": "us-en"}
+    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode(params)
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "AstroNexusAI/2.0"})
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
         with urllib.request.urlopen(req, timeout=SEARCH_TIMEOUT) as resp:
-            data = json.loads(resp.read())
+            raw_html = resp.read().decode("utf-8", errors="replace")
     except Exception as e:
         logger.warning(f"[WebSearch/DDG] Request failed: {e}")
         return []
 
     results: list[WebResult] = []
 
-    # Abstract (top result)
-    if data.get("AbstractText") and data.get("AbstractURL"):
-        src = _extract_source(data["AbstractURL"])
+    # Parse result blocks: <div class="result__body"> ... </div>
+    # Extract title, URL and snippet from each block
+    blocks = _re.findall(
+        r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?'
+        r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+        raw_html, _re.DOTALL
+    )
+
+    for href, title_html, snippet_html in blocks[:n]:
+        # DDG wraps URLs in a redirect — extract the real URL
+        real_url = href
+        uddg_match = _re.search(r"uddg=([^&]+)", href)
+        if uddg_match:
+            try:
+                real_url = urllib.parse.unquote(uddg_match.group(1))
+            except Exception:
+                real_url = href
+
+        title   = html.unescape(_re.sub(r"<[^>]+>", "", title_html)).strip()
+        snippet = html.unescape(_re.sub(r"<[^>]+>", "", snippet_html)).strip()
+
+        if not real_url.startswith("http") or not title:
+            continue
+
+        src = _extract_source(real_url)
         results.append(WebResult(
-            title=   data.get("Heading", "Result"),
-            url=     data["AbstractURL"],
-            snippet= data["AbstractText"][:500],
+            title=   title[:120],
+            url=     real_url,
+            snippet= snippet[:400],
             source=  src,
-            score=   _domain_score(data["AbstractURL"]),
+            score=   _domain_score(real_url),
         ))
+
+    logger.info(f"[WebSearch/DDG] {len(results)} results for '{query[:50]}'")
+
+    # Fallback to Instant Answer API for entity queries (returns 0 blocks)
+    if not results:
+        ia_params = {"q": query, "format": "json", "no_redirect": "1", "no_html": "1"}
+        ia_url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode(ia_params)
+        try:
+            ia_req = urllib.request.Request(
+                ia_url, headers={"User-Agent": "AstroNexusAI/2.0"}
+            )
+            with urllib.request.urlopen(ia_req, timeout=SEARCH_TIMEOUT) as resp:
+                data = json.loads(resp.read())
+            if data.get("AbstractText") and data.get("AbstractURL"):
+                src = _extract_source(data["AbstractURL"])
+                results.append(WebResult(
+                    title=   data.get("Heading", "Result"),
+                    url=     data["AbstractURL"],
+                    snippet= data["AbstractText"][:500],
+                    source=  src,
+                    score=   _domain_score(data["AbstractURL"]),
+                ))
+            for rel in data.get("RelatedTopics", [])[:n - len(results)]:
+                if isinstance(rel, dict) and rel.get("FirstURL"):
+                    results.append(WebResult(
+                        title=   rel.get("Text", "")[:80],
+                        url=     rel["FirstURL"],
+                        snippet= rel.get("Text", "")[:300],
+                        source=  _extract_source(rel["FirstURL"]),
+                        score=   _domain_score(rel["FirstURL"]),
+                    ))
+        except Exception:
+            pass
+
+    return results[:n]
 
     # Related topics
     for topic in data.get("RelatedTopics", [])[:n]:

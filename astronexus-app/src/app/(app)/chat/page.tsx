@@ -11,7 +11,7 @@ import { VoicePanel }     from '@/features/chat/VoicePanel'
 import { VoiceMicButton } from '@/features/chat/VoiceMicButton'
 import { AstroThinkingCore } from '@/components/chat/AstroThinkingCore'
 import { useChatStore } from '@/store/chat.store'
-import { useAuth } from '@/hooks/useAuth'
+import { useAuthStore } from '@/store/auth.store'
 import { chatService } from '@/services/chat.service'
 import { uid } from '@/lib/utils'
 
@@ -22,7 +22,7 @@ const SUGGESTIONS = [
 ]
 
 export default function ChatPage() {
-  const { user } = useAuth()
+  const { user } = useAuthStore()
   const { conversations, activeId, create, setActive, addMessage, updateLastAssistant } = useChatStore()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
